@@ -51,10 +51,12 @@ _DRAWING_EXTS: frozenset[str] = frozenset({".dwg", ".dxf", ".bak"})
 # 预算文件扩展名
 _BUDGET_EXTS: frozenset[str] = frozenset({".xls", ".xlsx", ".et", ".csv"})
 
-# 预算关键词
+# 预算关键词（文件名含任一关键词 → 预算，不限扩展名）
 _BUDGET_KEYWORDS: tuple[str, ...] = (
     "预算", "概算", "造价", "报价", "清单",
     "cost", "estimate", "budget",
+    # v1.5.2：业务补充关键词（来自实际工程文件命名）
+    "CPMS结构数据", "嘉陵版", "安全事故防范", "安全生产费依据",
 )
 
 
@@ -196,16 +198,32 @@ def classify_file(
         )
 
     # ── 预算识别（次级）──
+    # v1.5.2 修正预算识别规则（不再把所有表格类文件归为预算）：
+    # 1. 文件名含预算关键词（不限扩展名）→ 预算
+    # 2. 表格类扩展名 + 文件名 stem 去除数字后 == 点位名 → 预算
+    #    （如「龙泉湾202606121457.xlsx」去数字后 = 「龙泉湾」== 点位名）
+    match_name = for_matching(file.file_name)
+    for kw in _BUDGET_KEYWORDS:
+        if for_matching(kw) in match_name:
+            return ClassificationResult(
+                file=file, category="预算",
+                reason=f"预算关键词「{kw}」",
+                target_dir=Path(point_dir) / point_name / "预算",
+            )
+
     if ext in _BUDGET_EXTS:
-        # 关键词匹配
-        match_name = for_matching(file.file_name)
-        for kw in _BUDGET_KEYWORDS:
-            if for_matching(kw) in match_name:
-                return ClassificationResult(
-                    file=file, category="预算",
-                    reason=f"预算关键词「{kw}」",
-                    target_dir=Path(point_dir) / point_name / "预算",
-                )
+        # 表格类文件：stem 去除数字后等于点位名 → 预算
+        stem_norm = for_matching(stem)
+        # 去除连续数字段
+        import re as _re
+        stem_no_digits = _re.sub(r"\d+", "", stem_norm).strip("-_ ")
+        point_norm = for_matching(point_name)
+        if stem_no_digits and stem_no_digits == point_norm:
+            return ClassificationResult(
+                file=file, category="预算",
+                reason=f"表格文件 stem 去数字=点位名（{stem_no_digits}）",
+                target_dir=Path(point_dir) / point_name / "预算",
+            )
 
     # ── 其他 ──
     return ClassificationResult(
@@ -310,62 +328,48 @@ def build_organize_plan(
         len(plan.conflicts),
     )
     return plan
-    """为所有点位生成整理计划。
+
+
+# ====================================================================
+# v1.5：基于唯一归属模型的整理计划入口
+# ====================================================================
+
+
+def build_organize_plan_from_ownership(
+    file_index,
+    points: list[dict],
+    project_path: str,
+) -> OrganizePlan:
+    """v1.5：基于唯一归属模型生成整理计划。
+
+    使用 ownership.assign_ownership 做唯一归属决策，
+    禁止调用 file_index.global_match_point（反向匹配污染源）。
 
     Args:
-        point_files: {point_name: [FileEntry, ...]}（来自 FileIndex 匹配结果）。
+        file_index: 项目的 FileIndex。
+        points: 点位字典列表 [{id, standard_point_name, ...}]。
         project_path: 项目根目录路径。
 
     Returns:
         OrganizePlan 含所有分类和冲突。
     """
-    plan = OrganizePlan(project_path=project_path)
-    project_dir = Path(project_path)
+    from .ownership import assign_ownership
 
-    for pname, files in point_files.items():
-        # v1.4.2 修复：图纸文件必须严格属于该点位。
-        # global_match_point 的 fuzzy 匹配会导致相似点位名互相污染；
-        # 在生成整理计划时，只把真正属于本点位的图纸文件纳入 CAD 索引。
-        drawing_files = [
-            f for f in files
-            if f.extension in _DRAWING_EXTS and _drawing_belongs_to_point(f, pname)
-        ]
-        cad_index = build_cad_index(drawing_files)
+    ownership = assign_ownership(file_index, points)
 
-        classifications: list[ClassificationResult] = []
-        for f in files:
-            result = classify_file(f, cad_index, pname, str(project_dir))
-            result.target_path = str(result.target_dir / f.file_name)
-            classifications.append(result)
+    # 构建 point_id → point_name 映射
+    pid_to_pname: dict[int, str] = {}
+    for p in points:
+        pid_to_pname[int(p["id"])] = p.get("standard_point_name", "")
 
-        plan.points[pname] = classifications
-        plan.total_files += len(classifications)
+    # 转换为 build_organize_plan 所需的 {point_name: [FileEntry]} 格式
+    point_files: dict[str, list[FileEntry]] = {}
+    for pid, files in ownership.point_files.items():
+        pname = pid_to_pname.get(pid, "")
+        if pname:
+            point_files[pname] = files
 
-        for r in classifications:
-            if r.category == "图纸":
-                plan.drawing_count += 1
-            elif r.category == "预算":
-                plan.budget_count += 1
-            else:
-                plan.other_count += 1
-
-        # 冲突检测：目标路径已存在同名文件
-        seen_targets: set[str] = set()
-        for r in classifications:
-            dest = str(Path(r.target_path).resolve())
-            if dest in seen_targets:
-                plan.conflicts.append(
-                    f"{pname}/{r.file.file_name} → {r.target_dir}"
-                )
-            seen_targets.add(dest)
-
-    logger.info(
-        "整理计划：%d 点位置，%d 文件（图纸=%d 预算=%d 其他=%d）冲突=%d",
-        len(plan.points), plan.total_files,
-        plan.drawing_count, plan.budget_count, plan.other_count,
-        len(plan.conflicts),
-    )
-    return plan
+    return build_organize_plan(point_files, project_path)
 
 
 # ====================================================================

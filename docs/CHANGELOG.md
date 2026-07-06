@@ -2,6 +2,118 @@
 
 > 按版本倒序记录。每个开发任务完成后追加一条。
 
+## [v1.5.1] - 2026-07-07 — 预算识别规则修复
+
+### 问题
+
+1. **文件名含"预算"但扩展名是 PDF → 被错误归为"其他"**
+   - 例：`-设计预算-云南财经职业学院...PDF.pdf` 被归为"其他"
+   - 根因：旧规则要求"预算类型(.xls/.xlsx/.et/.csv) **且** 文件名含关键词"，AND 逻辑太严格
+
+2. **表格类文件无预算关键词 → 被错误归为"其他"**
+   - 例：龙泉湾点位的 `CPMS结构数据--龙泉湾.xlsx`、`龙泉湾_嘉陵版V1.xlsx` 等被归为"其他"
+   - 根因：这些文件名不含"预算/概算/造价"等关键词
+
+### v1.5.2 修正（用户纠正）
+
+v1.5.1 的修复过于宽泛（把所有 `.xlsx` 都归为预算）。v1.5.2 按用户给定的准确规则重新修正：
+
+**预算识别规则（OR 逻辑）**：
+1. 文件名含预算关键词（不限扩展名）→ 预算
+   - 关键词：预算/概算/造价/报价/清单/cost/estimate/budget
+   - 业务补充：CPMS结构数据/嘉陵版/安全事故防范/安全生产费依据
+2. 表格类扩展名（.xls/.xlsx/.et/.csv）+ 文件名 stem 去除数字后 == 点位名 → 预算
+   - 如「龙泉湾202606121457.xlsx」去数字后 = 「龙泉湾」== 点位名 → 预算
+
+**不再**把所有表格类文件自动归为预算。
+
+### 修改文件
+
+- `core/file_organizer.py`：
+  - `_BUDGET_KEYWORDS` 补充业务关键词
+  - `classify_file` 预算识别改为：关键词匹配 OR (表格类 + stem去数字=点位名)
+- `core/ownership.py`：
+  - 新增 `_is_budget_file()` 统一预算判断函数
+  - `_compute_status()` / `get_file_counts_for_point()` 使用统一函数，传入 point_name
+- `core/scan_result.py`：`get_file_counts_for_point` 调用传入 pname
+- `tests/test_v1_5_ownership.py`：更新测试覆盖新规则
+
+### 验证
+
+- 20/20 测试全部通过
+- Lint：0 诊断
+
+## [v1.5.0] - 2026-07-07 — 唯一归属模型（Single Ownership Model）
+
+### 核心重构：两阶段唯一归属模型
+
+彻底重构文件归属逻辑，解决"一个文件被多个点位同时识别"的多点归属污染问题。
+
+**两阶段模型**：
+1. 候选生成：每个文件对每个点位打分（允许多点）
+2. 唯一归属决策：每个文件取 Top1 点位；score < 0.75 不归属；冲突（Top1≈Top2）不归属
+
+**图纸特殊规则**：
+- DWG / DXF / BAK / PDF 必须 stem 精确匹配（或路径/父目录含点位名）
+- 禁止 fuzzy match 参与图纸归属
+
+### 新增
+
+- `core/ownership.py`（~350 行）——唯一归属模型核心模块：
+  - `OWNERSHIP_THRESHOLD = 0.75` 归属阈值
+  - `CONFLICT_MARGIN = 0.05` 冲突阈值
+  - `DRAWING_EXTS = {.dwg, .dxf, .bak, .pdf}` 图纸扩展名
+  - `_score_file_to_point()` 阶段1：文件→点位打分（图纸强制 stem 精确匹配）
+  - `_decide_ownership()` 阶段2：Top1 决策（阈值+冲突检测）
+  - `assign_ownership()` 主入口：两阶段完整决策
+  - `OwnershipDecision` / `OwnershipResult` 数据结构
+  - `get_scanned_files_for_point()` / `get_file_counts_for_point()` 辅助查询
+- `tests/test_v1_5_ownership.py`（9 项测试）：
+  - 一文件一归属、无重叠
+  - 阈值 < 0.75 不归属
+  - 图纸 stem 精确匹配、禁止 fuzzy
+  - PDF 同名绑定规则
+  - 冲突场景处理
+  - 状态计算基于归属
+  - 整理计划基于归属
+
+### 修改
+
+- `core/scanner.py` — `match_points_from_index` 重写：
+  - 内部改为调用 `ownership.assign_ownership`（两阶段唯一归属）
+  - 移除 `match_file_to_points` 调用（旧 fuzzy 链路）
+  - 移除 `file_index.global_match_point` / `compute_drawing_status` / `compute_budget_status` 调用（反向匹配污染源）
+  - 状态计算改为从 `ownership.point_status` 取
+  - 保留返回签名 `(matches, unmatched, conflicts)` 兼容现有调用方
+- `core/scan_result.py` — `build_scan_results`：
+  - 移除 `match_points_from_index` 调用（旧链路含 fuzzy 反向匹配）
+  - 移除 `file_index.global_match_point` 二次调用（反向匹配污染源）
+  - 改用 `ownership.assign_ownership` 做唯一归属决策
+  - scanned_files / cad_count / budget_count 全部从 ownership 结果取
+  - 清理残留的 `match_points_from_index` import
+- `core/file_organizer.py`：
+  - 删除重复的死代码（`build_organize_plan` 重复函数体）
+  - 新增 `build_organize_plan_from_ownership()` 基于 ownership 模型的入口
+- `ui/widgets/pages/scan_center_page.py`：
+  - `_on_organize_preview` 改用 `build_organize_plan_from_ownership`（移除 `global_match_point`）
+  - `_on_organize_apply` 同上
+- `ui/widgets/pages/project_detail_page.py` — `_try_match_from_sandbox`：
+  - 改用 `ownership.assign_ownership` 替代 `match_points_from_index`
+  - 状态从 `ownership.status_for_point` 取
+
+### 禁止行为（硬约束）
+
+- ❌ 禁止一个文件归属多个点位 → ✅ 每个文件只取 Top1
+- ❌ 禁止扫描阶段直接写归属 → ✅ 归属决策统一走 `ownership.assign_ownership`
+- ❌ 禁止 fuzzy match 参与图纸归属 → ✅ 图纸强制 stem 精确匹配
+- ❌ 禁止 `build_scan_results` 调用 `global_match_point` → ✅ 已移除
+
+### 验证
+
+- Lint：0 诊断（ownership / scan_result / file_organizer / scan_center_page）
+- `test_v1_3_smoke.py`：9/9 全部通过（无回归）
+- `test_v1_5_ownership.py`：9/9 全部通过
+
 ## [v1.4.2] - 2026-07-07 — 图纸识别跨点位污染修复
 
 ### 问题

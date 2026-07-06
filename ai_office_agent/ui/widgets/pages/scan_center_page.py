@@ -1435,19 +1435,19 @@ class ScanCenterPage(BasePage):
     # ------------------------------------------------------------------ v1.3 文件整理
 
     def _on_organize_preview(self) -> None:
-        """Dry Run：生成文件整理预览。"""
+        """Dry Run：生成文件整理预览（v1.5：使用唯一归属模型）。"""
         if self._project_id is None or self._summary is None:
             QMessageBox.warning(self, "提示", "请先执行扫描。")
             return
 
         try:
-            from ....core.file_organizer import build_organize_plan
+            from ....core.file_organizer import build_organize_plan_from_ownership
             from ....core.file_index import FileIndex
             from ....core.scanner import TEST_ROOT_PATH
+            from pathlib import Path as P
 
             # 构建 FileIndex
             root = str(TEST_ROOT_PATH)
-            from pathlib import Path as P
             proj_dir = P(root) / self._project_name
             if not proj_dir.exists():
                 QMessageBox.warning(self, "提示", f"项目目录不存在：{proj_dir}")
@@ -1455,19 +1455,21 @@ class ScanCenterPage(BasePage):
 
             file_index = FileIndex.build(proj_dir)
 
-            # 按点位分组文件
-            point_files: dict[str, list] = {}
-            for item in self._summary.items:
-                pname = item.standard_point_name
-                matching = file_index.global_match_point(pname)
-                if matching:
-                    point_files[pname] = matching
-
-            if not point_files:
+            # v1.5：从 summary.items 提取点位字典，用唯一归属模型分组
+            points = [
+                {"id": item.point_id, "standard_point_name": item.standard_point_name}
+                for item in self._summary.items
+                if item.point_id is not None
+            ]
+            if not points:
                 QMessageBox.information(self, "提示", "未找到可整理的文件。")
                 return
 
-            plan = build_organize_plan(point_files, str(proj_dir))
+            plan = build_organize_plan_from_ownership(file_index, points, str(proj_dir))
+
+            if plan.total_files == 0:
+                QMessageBox.information(self, "提示", "未找到可整理的文件。")
+                return
 
             # 显示预览对话框
             self._show_organize_preview(plan)
@@ -1482,7 +1484,7 @@ class ScanCenterPage(BasePage):
         dialog.exec()
 
     def _on_organize_apply(self) -> None:
-        """执行整理（Apply Mode）。"""
+        """执行整理（Apply Mode，v1.5：使用唯一归属模型）。"""
         if self._project_id is None or self._summary is None:
             QMessageBox.warning(self, "提示", "请先执行扫描。")
             return
@@ -1501,7 +1503,7 @@ class ScanCenterPage(BasePage):
 
         try:
             from ....core.file_organizer import (
-                build_organize_plan,
+                build_organize_plan_from_ownership,
                 apply_organize_plan,
             )
             from ....core.file_index import FileIndex
@@ -1512,14 +1514,14 @@ class ScanCenterPage(BasePage):
             proj_dir = P(root) / self._project_name
             file_index = FileIndex.build(proj_dir)
 
-            point_files: dict[str, list] = {}
-            for item in self._summary.items:
-                pname = item.standard_point_name
-                matching = file_index.global_match_point(pname)
-                if matching:
-                    point_files[pname] = matching
+            # v1.5：从 summary.items 提取点位字典，用唯一归属模型分组
+            points = [
+                {"id": item.point_id, "standard_point_name": item.standard_point_name}
+                for item in self._summary.items
+                if item.point_id is not None
+            ]
 
-            plan = build_organize_plan(point_files, str(proj_dir))
+            plan = build_organize_plan_from_ownership(file_index, points, str(proj_dir))
             result = apply_organize_plan(plan)
 
             QMessageBox.information(

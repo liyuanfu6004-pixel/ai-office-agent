@@ -470,7 +470,6 @@ def build_scan_results(
         from .scanner import (
             TEST_ROOT_PATH,
             scan_with_file_index,
-            match_points_from_index,
         )
         from .file_index import FileIndex
         from .matcher import match_folder
@@ -497,40 +496,56 @@ def build_scan_results(
                  "county": p.get("county", "")}
                 for p in filtered_points
             ]
-            matches, _unmatched, conflict_files = match_points_from_index(
-                matched_project, point_dict
+
+            # ── v1.5：两阶段唯一归属模型 ──
+            # 禁止调用 global_match_point（反向匹配会导致多归属污染）
+            # 禁止调用 match_points_from_index（旧链路含 fuzzy 反向匹配）
+            from .ownership import (
+                assign_ownership,
+                get_scanned_files_for_point,
+                get_file_counts_for_point,
             )
+            ownership = assign_ownership(matched_project.file_index, point_dict)
 
-            for m in matches:
-                if m.point_name:
-                    scanned_files: list[str] = []
-                    cad_count = 0
-                    budget_count = 0
+            # 构建 point_name → point_id 映射
+            pname_to_pid: dict[str, int] = {}
+            for p in point_dict:
+                pname_to_pid[p["standard_point_name"]] = int(p["id"])
 
-                    # 从 FileIndex 收集匹配文件
-                    matching_files = matched_project.file_index.global_match_point(m.point_name)
-                    for fe in matching_files[:50]:
-                        scanned_files.append(fe.file_name)
-                        if fe.extension == ".dwg":
-                            cad_count += 1
-                        else:
-                            budget_count += 1
+            for p in point_dict:
+                pid = int(p["id"])
+                pname = p["standard_point_name"]
+                files = ownership.files_for_point(pid)
+                cad_status, budget_status = ownership.status_for_point(pid)
+                cad_count, budget_count = get_file_counts_for_point(ownership, pid, pname)
+                scanned_files = get_scanned_files_for_point(ownership, pid)
 
-                    match_map[m.point_name] = {
-                        "folder_name": m.folder_name,
-                        "folder_path": m.folder_path,
-                        "match_score": m.match_score,
-                        "drawing_status": m.drawing_status,
-                        "budget_status": m.budget_status,
-                        "scanned_files": scanned_files,
-                        "cad_file_count": cad_count,
-                        "budget_file_count": budget_count,
-                        "is_multi_candidate": False,
-                    }
+                # 取第一个归属文件的父目录作为 folder_name
+                folder_name = ""
+                folder_path = ""
+                if files:
+                    folder_name = files[0].parent_dir
+                    folder_path = files[0].parent_path
+
+                # 匹配分数：有归属文件 → 1.0；否则 0
+                match_score = 1.0 if files else 0.0
+
+                match_map[pname] = {
+                    "folder_name": folder_name,
+                    "folder_path": folder_path,
+                    "match_score": match_score,
+                    "drawing_status": cad_status,
+                    "budget_status": budget_status,
+                    "scanned_files": scanned_files,
+                    "cad_file_count": cad_count,
+                    "budget_file_count": budget_count,
+                    "is_multi_candidate": False,
+                }
 
             logger.info(
-                "v1.3.1 扫描结果生成：项目=%s，%d 点位匹配，%d 冲突文件",
-                project_name, len(match_map), len(conflict_files),
+                "v1.5 唯一归属扫描结果：项目=%s，%d 点位，已归属文件=%d，冲突=%d",
+                project_name, len(match_map),
+                ownership.assigned_count, len(ownership.conflict_files),
             )
 
     except Exception as exc:

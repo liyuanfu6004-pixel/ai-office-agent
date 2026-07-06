@@ -578,13 +578,16 @@ def match_points_from_index(
     project: ProjectNode,
     point_list: list[dict],
 ) -> tuple[list[MatchResult], list[str], list[str]]:
-    """v1.3.1 唯一归属匹配：文件 → 所有点位 → 单一归属（Top1 Winner）。
+    """v1.5 唯一归属匹配：基于 ownership 模型。
 
-    核心升级：
-    - 不再按点位逐个匹配（旧逻辑导致一文件多归属）
-    - 改为按文件逐一对所有点位打分，取最高分唯一归属
-    - 冲突检测：top1-top2 < 5 → 不归属任何点位
-    - 每个文件只归属一个 point_id
+    核心升级（v1.5）：
+    - 内部调用 ownership.assign_ownership 做两阶段唯一归属决策
+    - 禁止调用 file_index.global_match_point（反向匹配污染源）
+    - 禁止调用 matcher.match_file_to_points（旧 fuzzy 链路）
+    - 图纸类文件强制 stem 精确匹配
+    - 阈值 0.75，冲突 margin 0.05
+
+    保留原返回签名 (matches, unmatched_names, conflict_file_paths) 以兼容。
 
     Args:
         project: 含 FileIndex 的 ProjectNode。
@@ -596,6 +599,9 @@ def match_points_from_index(
     if project.file_index is None:
         logger.warning("项目 %s 无 FileIndex，回退旧匹配", project.name)
         return match_project_sites(project, point_list)
+
+    from .ownership import assign_ownership
+    from .normalizer import for_matching as _fm
 
     profile = get_profile()
 
@@ -612,87 +618,30 @@ def match_points_from_index(
     if not active_points:
         return [], [], []
 
-    # ── v1.3.1：文件 → 所有点位 → Top1 Winner ──
-    from .matcher import match_file_to_points
+    # ── v1.5：两阶段唯一归属模型 ──
+    ownership = assign_ownership(project.file_index, active_points)
 
-    # 按 point_id 收集归属文件
-    owned_files: dict[int, list[tuple[str, str, float]]] = {
-        int(p["id"]): [] for p in active_points
-    }
-    conflict_files: list[str] = []
-    assigned: set[str] = set()  # 已归属文件路径集合
-
-    for fe in project.file_index.files:
-        # 跳过已归属文件（唯一性保证）
-        if fe.full_path in assigned:
-            continue
-
-        file_match = match_file_to_points(
-            file_name=fe.normalized_name,
-            file_path=fe.full_path,
-            points=active_points,
-            parent_dir_name=fe.parent_dir,
-        )
-
-        if file_match.is_conflict:
-            conflict_files.append(fe.full_path)
-        elif file_match.is_assigned and file_match.best_point_id is not None:
-            pid = file_match.best_point_id
-            if pid in owned_files:
-                owned_files[pid].append(
-                    (fe.file_name, fe.full_path, file_match.best_score)
-                )
-                assigned.add(fe.full_path)
-
-    # ── 构建 MatchResult ──
-    # 先建"点位名 → 状态"缓存，让重复点位名共享同一扫描状态
-    from .normalizer import for_matching as _fm
-    name_status_cache: dict[str, tuple[str, str, str, str]] = {}
-    # {norm_name: (folder_name, folder_path, drawing_status, budget_status)}
-    for p in active_points:
-        pname = p.get("standard_point_name", "")
-        pid = int(p["id"])
-        pnorm = _fm(pname)
-        if pnorm in name_status_cache:
-            continue  # 同名已算过
-        files = owned_files.get(pid, [])
-        if files:
-            best_dir = Path(files[0][1]).parent.name
-            best_path = str(Path(files[0][1]).parent)
-            drawing_status = project.file_index.compute_drawing_status(pname)
-            budget_status = project.file_index.compute_budget_status(pname)
-            name_status_cache[pnorm] = (best_dir, best_path, drawing_status, budget_status)
-        else:
-            # 即便本 id 没文件，用 FileIndex 直接查（处理同名重复点位，文件归了其他id）
-            drawing_status = project.file_index.compute_drawing_status(pname)
-            budget_status = project.file_index.compute_budget_status(pname)
-            if drawing_status == "有" or budget_status == "有":
-                # 找到了文件，说明是重复点位，取目录信息
-                found = project.file_index.global_match_point(pname)
-                best_dir = found[0].parent_dir if found else pname
-                best_path = found[0].parent_path if found else ""
-                name_status_cache[pnorm] = (best_dir, best_path, drawing_status, budget_status)
-            else:
-                name_status_cache[pnorm] = ("", "", "无", "无")
-
+    # 构建 MatchResult
     matches: list[MatchResult] = []
     unmatched: list[str] = []
 
     for p in active_points:
         pname = p.get("standard_point_name", "")
         pid = int(p["id"])
-        pnorm = _fm(pname)
-        folder_name, folder_path, drawing_status, budget_status = name_status_cache.get(
-            pnorm, ("", "", "无", "无")
-        )
-        if folder_name or drawing_status == "有" or budget_status == "有":
+        files = ownership.files_for_point(pid)
+        cad_status, budget_status = ownership.status_for_point(pid)
+
+        if files:
+            # 取第一个归属文件的父目录作为 folder_name
+            folder_name = files[0].parent_dir
+            folder_path = files[0].parent_path
             matches.append(MatchResult(
                 folder_name=folder_name,
                 folder_path=folder_path,
                 point_id=pid,
                 point_name=pname,
                 match_score=1.0,
-                drawing_status=drawing_status,
+                drawing_status=cad_status,
                 budget_status=budget_status,
             ))
         else:
@@ -704,10 +653,11 @@ def match_points_from_index(
             ))
 
     logger.info(
-        "v1.3.1 唯一归属匹配：项目=%s，%d 文件已归属，%d 冲突，%d 点位置",
-        project.name, len(assigned), len(conflict_files), len(active_points),
+        "v1.5 唯一归属匹配：项目=%s，%d 文件已归属，%d 冲突，%d 点位置",
+        project.name, ownership.assigned_count,
+        len(ownership.conflict_files), len(active_points),
     )
-    return matches, unmatched, conflict_files
+    return matches, unmatched, ownership.conflict_files
 
 
 def _extract_county_from_name(project_name: str, profile) -> str | None:

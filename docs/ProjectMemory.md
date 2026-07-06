@@ -37,9 +37,26 @@
 
 ## 5. 当前版本
 
-**v1.4.2**
+**v1.5.0**
 
 ## 6. 当前开发阶段
+
+**v1.5.0 唯一归属模型（Single Ownership Model）— 开发完成** ✅
+
+### 核心重构：两阶段唯一归属模型
+
+- 阶段1 候选生成：文件→所有点位打分
+- 阶段2 唯一归属决策：Top1 + 阈值 0.75 + 冲突检测
+- 图纸特殊规则：DWG/DXF/BAK/PDF 必须 stem 精确匹配
+
+### v1.5.0 新增模块
+- `core/ownership.py`（~350 行）——唯一归属模型核心
+- `tests/test_v1_5_ownership.py`——9 项专项测试
+
+### v1.5.0 修改模块
+- `core/scan_result.py` — `build_scan_results` 改用 `assign_ownership`，移除 `global_match_point`
+- `core/file_organizer.py` — 新增 `build_organize_plan_from_ownership`
+- `ui/widgets/pages/scan_center_page.py` — 文件整理预览/执行改用 ownership 模型
 
 **v1.4.2 图纸识别跨点位污染修复 — 开发完成** ✅
 

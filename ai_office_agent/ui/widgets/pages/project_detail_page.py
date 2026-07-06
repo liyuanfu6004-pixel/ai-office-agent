@@ -648,7 +648,7 @@ class ProjectDetailPage(BasePage):
     def _try_match_from_sandbox(
         self, project_name: str, points: list[dict]
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """v1.2.3：使用 FileIndex 全局匹配，不依赖目录结构假设。
+        """v1.5：使用 ownership 唯一归属模型匹配，不依赖目录结构假设。
 
         Returns:
             (drawing_status_map, budget_status_map): 键为 standard_point_name。
@@ -657,8 +657,9 @@ class ProjectDetailPage(BasePage):
         budget_map: dict[str, str] = {}
 
         try:
-            from ....core.scanner import TEST_ROOT_PATH, scan_with_file_index, match_points_from_index
+            from ....core.scanner import TEST_ROOT_PATH, scan_with_file_index
             from ....core.matcher import match_folder
+            from ....core.ownership import assign_ownership
 
             projects = scan_with_file_index(str(TEST_ROOT_PATH))
 
@@ -669,15 +670,15 @@ class ProjectDetailPage(BasePage):
                     matched_project = proj
                     break
 
-            if matched_project is None:
+            if matched_project is None or matched_project.file_index is None:
                 logger.debug("沙盒中未找到匹配的项目文件夹：%s", project_name)
                 return drawing_map, budget_map
 
             logger.info(
-                "v1.2.3 沙盒匹配到项目：%s（FileIndex: %d 文件, %d 目录）",
+                "v1.5 沙盒匹配到项目：%s（FileIndex: %d 文件, %d 目录）",
                 matched_project.path,
-                len(matched_project.file_index.files) if matched_project.file_index else 0,
-                len(matched_project.file_index.dirs) if matched_project.file_index else 0,
+                len(matched_project.file_index.files),
+                len(matched_project.file_index.dirs),
             )
 
             point_dict = [
@@ -685,22 +686,22 @@ class ProjectDetailPage(BasePage):
                  "county": p.get("county", "")}
                 for p in points
             ]
-            matches, _unmatched, conflict_files = match_points_from_index(
-                matched_project, point_dict
-            )
+            ownership = assign_ownership(matched_project.file_index, point_dict)
 
-            for m in matches:
-                if m.is_matched and m.point_name:
-                    drawing_map[m.point_name] = m.drawing_status
-                    budget_map[m.point_name] = m.budget_status
+            for p in point_dict:
+                pid = int(p["id"])
+                pname = p["standard_point_name"]
+                cad_status, budget_status = ownership.status_for_point(pid)
+                drawing_map[pname] = cad_status
+                budget_map[pname] = budget_status
 
             logger.info(
-                "v1.2.3 沙盒状态计算完成：%d 个点位有图纸状态，%d 个有预算状态",
+                "v1.5 沙盒状态计算完成：%d 个点位有图纸状态，%d 个有预算状态",
                 len(drawing_map), len(budget_map),
             )
 
         except Exception as exc:
-            logger.debug("v1.2.3 FileIndex 扫描失败，使用默认状态：%s", exc)
+            logger.debug("v1.5 ownership 扫描失败，使用默认状态：%s", exc)
 
         return drawing_map, budget_map
 

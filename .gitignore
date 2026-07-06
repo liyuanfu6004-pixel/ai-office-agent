@@ -1,0 +1,17 @@
+# 运行时自动生成的目录
+data/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PySide6 / Qt
+*.log
+
+# IDE
+.vscode/
+.idea/

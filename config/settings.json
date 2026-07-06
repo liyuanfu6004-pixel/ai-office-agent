@@ -1,0 +1,12 @@
+{
+    "database": {
+        "path": "data/ai_office_agent.db",
+        "timeout": 5.0
+    },
+    "ui": {
+        "width": 1280,
+        "height": 800,
+        "nav_width": 260,
+        "title": "AI Office Agent"
+    }
+}

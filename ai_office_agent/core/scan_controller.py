@@ -231,6 +231,7 @@ def _serialize_ownership(ownership) -> dict:
         "point_status": {str(k): list(v) for k, v in ownership.point_status.items()},
         "conflict_files": list(ownership.conflict_files),
         "unassigned_files": list(ownership.unassigned_files),
+        "unassigned_budget_files": list(ownership.unassigned_budget_files),
     }
 
 

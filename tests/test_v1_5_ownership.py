@@ -497,6 +497,112 @@ def test_drawing_stem_match_not_path() -> None:
     print("[OK] v1.5.3 图纸仅 stem 匹配，路径不影响归属")
 
 
+def test_budget_file_named_after_other_point_in_wrong_directory() -> None:
+    """v1.5.6：文件名含点位A但物理在点位B目录下 → 应归属点位A（文件名优先）。
+
+    真实场景：预算文件「盘龙-联盟街道-分纤箱扩容点位202606121558.xlsx」
+    被放在「安宁-太平新城街道-分纤箱扩容点位/其他文件/」目录下。
+    旧逻辑：点位A(stem) 0.9 vs 点位B(path) 0.9 → 冲突 → 不归属 → 预算丢失。
+    新逻辑：Tier1 stem 含点位名 → 0.95 > Tier2 path → 0.85 → 归属点位A。
+    """
+    point_a = "盘龙-联盟街道-分纤箱扩容点位"
+    point_b = "安宁-太平新城街道-分纤箱扩容点位"
+
+    files = [
+        # 预算文件（含点位A名），但放在点位B的"其他文件"目录下
+        _make_file_entry(
+            f"{point_a}202606121558.xlsx",
+            f"/proj/{point_b}/其他文件/{point_a}202606121558.xlsx",
+            ".xlsx",
+        ),
+        _make_file_entry(
+            f"{point_a}202606121558_安全生产费依据.xlsx",
+            f"/proj/{point_b}/其他文件/{point_a}202606121558_安全生产费依据.xlsx",
+            ".xlsx",
+        ),
+        _make_file_entry(
+            f"CPMS结构数据--{point_a}202606121558.xlsx",
+            f"/proj/{point_b}/其他文件/CPMS结构数据--{point_a}202606121558.xlsx",
+            ".xlsx",
+        ),
+    ]
+    points = [
+        {"id": 1, "standard_point_name": point_a},
+        {"id": 2, "standard_point_name": point_b},
+    ]
+
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+
+    for f in files:
+        d = result.decisions[f.full_path]
+        assert d.is_assigned, f"预算文件 {f.file_name} 应归属，实际 {d.reason}"
+        assert d.best_point_id == 1, \
+            f"文件名含「{point_a}」应归属 point_a(id=1)，实际 id={d.best_point_id}"
+
+    # 验证 point_a 有预算文件
+    _, budget_status = result.status_for_point(1)
+    assert budget_status == "有", \
+        f"point_a 预算状态应为「有」，实际「{budget_status}」"
+
+    print(f"[OK] v1.5.6 文件名优先于路径：{len(files)} 个预算文件正确归属 point_a")
+
+
+def test_other_point_files_not_assigned_to_wrong_point() -> None:
+    """v1.5.7：其他点位的预算文件放在非点位目录下 → 不应被误归属。
+
+    真实场景：「五华-丰宁街道-分纤箱扩容点位」的预算文件被放在
+    「石林县宜奈一楼无线机房-...-SL-DZCC/III-GJ001」目录下。
+    五华-丰宁街道 不在点位字典中，但文件名含「分纤箱扩容」，
+    而石林县宜奈... 不含「分纤箱扩容」→ 反向排斥 → 不归属。
+    """
+    point_a = "石林县宜奈一楼无线机房-昆明石林县西街口镇大紫处村村委会门口资源点-SL-DZCC/III-GJ001"
+
+    files = [
+        # 五华-丰宁街道 的预算文件，放在 point_a 目录下
+        _make_file_entry(
+            "五华-丰宁街道-分纤箱扩容点位202606121434.xlsx",
+            f"/proj/{point_a}/其他文件/五华-丰宁街道-分纤箱扩容点位202606121434.xlsx",
+            ".xlsx",
+        ),
+        _make_file_entry(
+            "五华-丰宁街道-分纤箱扩容点位202606121434_嘉陵版V1.xlsx",
+            f"/proj/{point_a}/其他文件/五华-丰宁街道-分纤箱扩容点位202606121434_嘉陵版V1.xlsx",
+            ".xlsx",
+        ),
+        _make_file_entry(
+            "CPMS结构数据--五华-丰宁街道-分纤箱扩容点位202606121434.xlsx",
+            f"/proj/{point_a}/其他文件/CPMS结构数据--五华-丰宁街道-分纤箱扩容点位202606121434.xlsx",
+            ".xlsx",
+        ),
+        # point_a 自己的图纸文件（应正常归属）
+        _make_file_entry(
+            "石林县宜奈一楼无线机房-昆明石林县西街口镇大紫处村村委会门口资源点-SL-DZCCIII-GJ001.dwg",
+            f"/proj/{point_a}/石林县宜奈一楼无线机房-昆明石林县西街口镇大紫处村村委会门口资源点-SL-DZCCIII-GJ001.dwg",
+            ".dwg",
+        ),
+    ]
+    points = [
+        {"id": 1, "standard_point_name": point_a},
+    ]
+
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+
+    # 五华-丰宁街道的文件不应归属到 point_a
+    for f in files[:3]:
+        d = result.decisions[f.full_path]
+        assert not d.is_assigned, \
+            f"五华-丰宁街道的文件 {f.file_name} 不应归属到 point_a，实际 {d.reason}"
+
+    # point_a 自己的图纸文件应正常归属
+    d_dwg = result.decisions[files[3].full_path]
+    assert d_dwg.is_assigned and d_dwg.best_point_id == 1, \
+        f"point_a 的图纸应归属，实际 {d_dwg.reason}"
+
+    print("[OK] v1.5.7 反向排斥：其他点位文件不被误归到非匹配点位")
+
+
 def main() -> int:
     test_drawing_exts_constant()
     test_single_ownership_one_file_one_owner()
@@ -513,6 +619,8 @@ def main() -> int:
     test_generic_directory_not_treated_as_point_evidence()
     test_budget_pdf_can_be_assigned()
     test_drawing_stem_match_not_path()
+    test_budget_file_named_after_other_point_in_wrong_directory()
+    test_other_point_files_not_assigned_to_wrong_point()
     print("\nV1.5_OWNERSHIP_OK")
     return 0
 

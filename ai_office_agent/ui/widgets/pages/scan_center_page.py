@@ -149,18 +149,18 @@ class AISuggestionInterface:
 
 
 class OrganizePreviewDialog(QDialog):
-    """文件整理 Dry Run 预览对话框。
+    """文件整理预览对话框。
 
     特点：
     - 可调整大小，带右下角尺寸手柄
     - 内容区域支持垂直/水平滚动
-    - 鼠标滚轮可直接滚动查看
     - 显示完整分类明细，不做数量截断
+    - 底部「整理」+「取消」按钮，点击整理后执行实际移动
     """
 
     def __init__(self, plan, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("文件整理预览（Dry Run）")
+        self.setWindowTitle("整理文件预览")
         self.setMinimumSize(720, 480)
         self.resize(960, 640)
         self.setSizeGripEnabled(True)
@@ -184,14 +184,30 @@ class OrganizePreviewDialog(QDialog):
 
         layout.addWidget(self.text_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, self)
-        buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
+        # 自定义按钮：取消 + 整理
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("取消", self)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        organize_btn = QPushButton("整理", self)
+        organize_btn.setDefault(True)
+        organize_btn.setStyleSheet(
+            "QPushButton { background: #107C10; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 20px; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background: #0E6A0E; }"
+        )
+        organize_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(organize_btn)
+
+        layout.addLayout(btn_layout)
 
     def _build_text(self, plan) -> str:
         """根据整理计划构建完整预览文本。"""
         lines = [
-            "=== 文件整理预览（Dry Run）===",
+            "=== 整理文件预览 ===",
             f"项目：{plan.project_path}",
             f"总文件：{plan.total_files}（图纸={plan.drawing_count} 预算={plan.budget_count} 其他={plan.other_count}）",
             f"点位：{len(plan.points)} 个",
@@ -222,7 +238,7 @@ class StatCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("StatCard")
-        self.setMinimumSize(130, 80)
+        self.setMinimumSize(100, 80)
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
@@ -823,8 +839,8 @@ class ScanCenterPage(BasePage):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(
-            title="扫描结果中心",
-            subtitle="点位匹配与文件状态分析（v1.2.2 人工确认）",
+            title="扫描中心",
+            subtitle="点位匹配与文件状态分析",
             parent=parent,
         )
         self._config = config or AppConfig()
@@ -833,6 +849,7 @@ class ScanCenterPage(BasePage):
         self._summary: ScanResultSummary | None = None
         self._has_valid_session: bool = False
 
+        self._setup_project_selector()
         self._setup_info_bar()
         self._setup_stat_cards()
         self._setup_result_area()
@@ -841,8 +858,35 @@ class ScanCenterPage(BasePage):
 
     # ------------------------------------------------------------------ 顶部信息栏
 
+    def _setup_project_selector(self) -> None:
+        """项目选择器：标题下方的独立横幅，用于选择已导入项目。"""
+        self.project_selector_bar = QWidget(self)
+        self.project_selector_bar.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
+        )
+        layout = QHBoxLayout(self.project_selector_bar)
+        layout.setContentsMargins(0, 8, 0, 8)
+        layout.setSpacing(12)
+
+        project_label = QLabel("项目：", self.project_selector_bar)
+        project_label.setStyleSheet(
+            "color: #1B1B1B; font-size: 14px; font-weight: 600; background: transparent;"
+        )
+        layout.addWidget(project_label)
+
+        self.project_combo = QComboBox(self.project_selector_bar)
+        self.project_combo.setMinimumWidth(300)
+        self.project_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
+        )
+        self.project_combo.currentIndexChanged.connect(self._on_project_selected)
+        layout.addWidget(self.project_combo, 1)
+
+        layout.addStretch()
+        self.content_layout.addWidget(self.project_selector_bar)
+
     def _setup_info_bar(self) -> None:
-        """顶部信息栏：项目名/扫描时间/耗时/目录 + 操作按钮。"""
+        """顶部信息栏：扫描时间/耗时/目录 + 操作按钮。"""
         bar = QWidget(self)
         bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(bar)
@@ -852,12 +896,6 @@ class ScanCenterPage(BasePage):
         # 信息区域
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
-
-        self.project_name_label = QLabel("项目：—", bar)
-        self.project_name_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #1B1B1B; background: transparent;"
-        )
-        info_layout.addWidget(self.project_name_label)
 
         meta_row = QHBoxLayout()
         meta_row.setSpacing(20)
@@ -915,18 +953,14 @@ class ScanCenterPage(BasePage):
         )
         layout.addWidget(self.select_folder_btn)
 
-        # v1.3：文件整理按钮
-        self.organize_preview_btn = QPushButton("文件整理预览", bar)
-        self.organize_preview_btn.clicked.connect(self._on_organize_preview)
-        self.organize_preview_btn.setStyleSheet(
+        # v1.6.3：整理文件按钮（预览 + 执行合并）
+        self.organize_btn = QPushButton("整理文件", bar)
+        self.organize_btn.clicked.connect(self._on_organize)
+        self.organize_btn.setStyleSheet(
             "QPushButton { background: #0067C0; color: white; border: 1px solid #0067C0; }"
             "QPushButton:hover { background: #0B7AD9; }"
         )
-        layout.addWidget(self.organize_preview_btn)
-
-        self.organize_apply_btn = QPushButton("执行整理", bar)
-        self.organize_apply_btn.clicked.connect(self._on_organize_apply)
-        layout.addWidget(self.organize_apply_btn)
+        layout.addWidget(self.organize_btn)
 
         self.content_layout.addWidget(bar)
 
@@ -993,6 +1027,7 @@ class ScanCenterPage(BasePage):
 
         self._project_id = project_id
         self._project_name = row["project_name"] or f"项目 #{project_id}"
+        self._select_project_in_combo(project_id)
         self._load_and_scan()
         return True
 
@@ -1018,6 +1053,7 @@ class ScanCenterPage(BasePage):
 
         self._project_id = project_id
         self._project_name = row["project_name"] or f"项目 #{project_id}"
+        self._select_project_in_combo(project_id)
 
         # v1.5.3：优先读取当前 Scan Session；无有效 session 时不自动扫描
         from ....core.scan_controller import load_current_scan_session
@@ -1044,7 +1080,7 @@ class ScanCenterPage(BasePage):
         else:
             self._has_valid_session = False
             self._clear_display()
-            self.project_name_label.setText(f"项目：{self._project_name}（尚未扫描）")
+            self._refresh_project_combo()
             logger.info("扫描中心：项目 id=%s 无有效 Scan Session", project_id)
 
         return True
@@ -1071,7 +1107,7 @@ class ScanCenterPage(BasePage):
             logger.info("扫描中心：项目 id=%s 无点位数据", self._project_id)
             self._has_valid_session = False
             self._clear_display()
-            self.project_name_label.setText(f"项目：{self._project_name}（无点位数据）")
+            self._refresh_project_combo()
             return
 
         # v1.4：使用 ScanController.run_scan 统一入口（含数据库写入）
@@ -1111,7 +1147,8 @@ class ScanCenterPage(BasePage):
 
         s = self._summary
 
-        self.project_name_label.setText(f"项目：{s.project_name}")
+        self._refresh_project_combo()
+        self._select_project_in_combo(self._project_id)
         if s.scan_time:
             try:
                 dt = datetime.fromisoformat(s.scan_time)
@@ -1134,9 +1171,59 @@ class ScanCenterPage(BasePage):
         )
         self._update_scan_button_text()
 
+    # ------------------------------------------------------------------ 项目选择器
+
+    def _refresh_project_combo(self) -> None:
+        """从数据库加载所有已导入项目，填充到下拉框中。"""
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        self.project_combo.addItem("— 请选择项目 —", None)
+
+        try:
+            conn = Database.open_db_connection(self._config.database.path)
+            try:
+                projects_repository.init_projects_table(conn)
+                rows = projects_repository.fetch_all_projects(conn)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("加载项目列表失败：%s", exc)
+            rows = []
+
+        for row in rows:
+            pid = row["id"]
+            pname = row["project_name"] or f"项目 #{pid}"
+            self.project_combo.addItem(pname, pid)
+
+        self.project_combo.blockSignals(False)
+
+    def _select_project_in_combo(self, project_id: int | None) -> None:
+        """在下拉框中选中指定项目。"""
+        if project_id is None:
+            self.project_combo.setCurrentIndex(0)
+            return
+        for i in range(self.project_combo.count()):
+            if self.project_combo.itemData(i) == project_id:
+                self.project_combo.setCurrentIndex(i)
+                return
+
+    def _on_project_selected(self, index: int) -> None:
+        """用户在下拉框中选择了一个项目。"""
+        if index <= 0:
+            return  # 占位项「请选择项目」
+
+        project_id = self.project_combo.itemData(index)
+        if project_id is None or project_id == self._project_id:
+            return  # 同一个项目，不重复加载
+
+        logger.info("扫描中心：用户选择项目 id=%s", project_id)
+        self.load_project_cached(project_id)
+
+    # ------------------------------------------------------------------ 清空显示
+
     def _clear_display(self) -> None:
         """清空全部显示。"""
-        self.project_name_label.setText("项目：—")
+        self._refresh_project_combo()
         self.scan_time_label.setText("扫描时间：—")
         self.scan_duration_label.setText("耗时：—")
         self.scan_dir_label.setText("目录：—")
@@ -1477,7 +1564,8 @@ class ScanCenterPage(BasePage):
             return None
 
         points = [
-            {"id": item.point_id, "standard_point_name": item.standard_point_name}
+            {"id": item.point_id, "standard_point_name": item.standard_point_name,
+             "county": item.county}
             for item in self._summary.items
             if item.point_id is not None
         ]
@@ -1492,8 +1580,8 @@ class ScanCenterPage(BasePage):
             project_path=session.get("scan_path", ""),
         )
 
-    def _on_organize_preview(self) -> None:
-        """Dry Run：生成文件整理预览（读取当前 Scan Session）。"""
+    def _on_organize(self) -> None:
+        """整理文件：先弹出预览，确认后执行整理。"""
         if self._project_id is None or self._summary is None or not self._has_valid_session:
             QMessageBox.warning(self, "提示", "请先执行扫描")
             return
@@ -1508,43 +1596,14 @@ class ScanCenterPage(BasePage):
                 QMessageBox.information(self, "提示", "未找到可整理的文件。")
                 return
 
-            self._show_organize_preview(plan)
+            # 弹出预览对话框（含「整理」+「取消」按钮）
+            dialog = OrganizePreviewDialog(plan, self)
+            if not dialog.exec():
+                return  # 用户点取消
 
-        except Exception as exc:
-            logger.exception("文件整理预览失败")
-            QMessageBox.critical(self, "错误", f"预览失败：{exc}")
-
-    def _show_organize_preview(self, plan) -> None:
-        """显示 Dry Run 预览（v1.4.1：使用可调整大小的滚动对话框）。"""
-        dialog = OrganizePreviewDialog(plan, self)
-        dialog.exec()
-
-    def _on_organize_apply(self) -> None:
-        """执行整理（Apply Mode，读取当前 Scan Session）。"""
-        if self._project_id is None or self._summary is None or not self._has_valid_session:
-            QMessageBox.warning(self, "提示", "请先执行扫描")
-            return
-
-        reply = QMessageBox.warning(
-            self, "确认执行整理",
-            "此操作将移动文件到标准目录结构。\n"
-            "不会删除或覆盖任何文件。\n\n"
-            "建议先运行「文件整理预览」查看计划。\n\n"
-            "确定执行？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            from ....core.file_organizer import apply_organize_plan
+            # 用户点「整理」→ 执行整理
+            from ....core.file_organizer import apply_organize_plan, cleanup_empty_dirs
             from ....core.scan_controller import invalidate_scan_session
-
-            plan = self._build_organize_plan_from_current_session()
-            if plan is None:
-                QMessageBox.warning(self, "提示", "请先执行扫描")
-                return
 
             result = apply_organize_plan(plan)
             if result.get("moved", 0) > 0:
@@ -1556,17 +1615,23 @@ class ScanCenterPage(BasePage):
                 self._has_valid_session = False
                 self._update_scan_button_text()
 
+            # 整理后自动清理项目目录下的空文件夹
+            deleted = 0
+            if plan.project_path:
+                deleted = cleanup_empty_dirs(plan.project_path)
+
             QMessageBox.information(
                 self, "整理完成",
                 f"移动 {result['moved']} 个文件\n"
                 f"跳过 {result['skipped']} 个文件\n"
-                f"错误 {len(result['errors'])} 个\n\n"
+                f"错误 {len(result['errors'])} 个\n"
+                f"清理空文件夹 {deleted} 个\n\n"
                 f"文件位置可能已变化，请点击「执行扫描」更新结果。",
             )
 
         except Exception as exc:
-            logger.exception("文件整理执行失败")
-            QMessageBox.critical(self, "错误", f"执行失败：{exc}")
+            logger.exception("文件整理失败")
+            QMessageBox.critical(self, "错误", f"整理失败：{exc}")
 
 
 # ====================================================================

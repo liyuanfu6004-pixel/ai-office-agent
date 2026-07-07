@@ -92,6 +92,8 @@ class OwnershipResult:
     conflict_files: list[str] = field(default_factory=list)
     # 未归属文件路径列表
     unassigned_files: list[str] = field(default_factory=list)
+    # 未归属的预算文件路径列表（文件名含预算关键词但无法确定点位，需人工确认）
+    unassigned_budget_files: list[str] = field(default_factory=list)
 
     @property
     def assigned_count(self) -> int:
@@ -137,7 +139,7 @@ def _is_budget_like_file(file: FileEntry, point_name: str = "") -> bool:
     import re as _re
     budget_exts = {".xls", ".xlsx", ".et", ".csv"}
     budget_keywords = (
-        "预算", "概算", "造价", "报价", "清单",
+        "预算", "概算", "造价", "报价",
         "cost", "estimate", "budget",
         "CPMS结构数据", "嘉陵版", "安全事故防范", "安全生产费依据",
     )
@@ -148,8 +150,21 @@ def _is_budget_like_file(file: FileEntry, point_name: str = "") -> bool:
     if point_name and file.extension in budget_exts:
         stem = for_matching(Path(file.file_name).stem)
         stem_no_digits = _re.sub(r"\d+", "", stem).strip("-_ ")
-        if stem_no_digits and stem_no_digits == for_matching(point_name):
+        point_norm = for_matching(point_name)
+        if _stem_matches_point(stem_no_digits, point_norm):
             return True
+    return False
+
+
+def _stem_matches_point(stem_no_digits: str, point_norm: str) -> bool:
+    """检查去数字后的 stem 是否匹配点位名（精确 或 前缀）。"""
+    if not stem_no_digits or len(stem_no_digits) < 2:
+        return False
+    if stem_no_digits == point_norm:
+        return True
+    # 点位名以 stem 开头（如文件"安宁-县街街道.xlsx"匹配点位"安宁-县街街道-扩容"）
+    if point_norm.startswith(stem_no_digits + "-"):
+        return True
     return False
 
 
@@ -183,11 +198,25 @@ def _stem_match(file: FileEntry, point_name: str) -> bool:
     return False
 
 
-def _score_file_to_point(file: FileEntry, point: dict) -> float:
+def _score_file_to_point(
+    file: FileEntry,
+    point: dict,
+    all_point_names_norm: set[str] | None = None,
+) -> float:
     """阶段1：为单个文件对单个点位打分（0.0 ~ 1.0）。
 
     图纸类文件：必须 stem 精确匹配，否则得 0 分。
-    非图纸类文件：走 fuzzy 匹配（match_strings），分数归一化到 0~1。
+    非图纸类文件：分层评分。
+
+    v1.5.6 分层评分（解决文件名含点位A但路径在点位B目录下的冲突）：
+    - Tier 1: stem 含完整点位名 → 0.95（最强证据，立即返回）
+    - Tier 2: 路径含完整点位名 → 0.85
+    - Tier 3: 全名模糊匹配 → 封顶 0.88
+    - Tier 4: 分段模糊匹配 → 封顶 0.75（防止「分纤箱扩容点位」等公共后缀误匹配）
+
+    v1.5.7 反向排斥（解决其他点位文件被误归到目录所在点位）：
+    - stem 含其他已知点位名 → return 0.0（文件属于另一个点位）
+    - stem 含「分纤箱扩容」但当前点位名不含 → return 0.0
     """
     pname = point.get("standard_point_name", "")
     if not pname:
@@ -199,43 +228,87 @@ def _score_file_to_point(file: FileEntry, point: dict) -> float:
             return 1.0
         return 0.0
 
-    # 非图纸/预算 PDF：fuzzy 匹配
-    # 候选字符串：文件名 stem + 父目录名 + 全路径片段 + 标准化相对路径文本
-    candidates: list[str] = []
-    stem = for_matching(Path(file.file_name).stem)
-    if stem:
-        candidates.append(stem)
-    parent = for_matching(file.parent_dir)
-    if parent and not _is_generic_dir_name(file.parent_dir):
-        candidates.append(parent)
-    candidates.extend(_path_segments(file))
-    path_text = "-".join(_path_segments(file))
-    if path_text:
-        candidates.append(path_text)
-
     norm_pname = for_matching(pname)
     if not norm_pname:
         return 0.0
 
+    stem = for_matching(Path(file.file_name).stem)
+
+    # ── Tier 1: stem 含完整点位名 → 最强证据（立即返回）──
+    # 文件名直接包含点位名，比路径证据更可信。
+    # 例如「盘龙-联盟街道-分纤箱扩容点位202606121558.xlsx」
+    # 即使放在「安宁-太平新城街道」目录下，也应归属「盘龙-联盟街道」。
+    if stem and len(norm_pname) >= 4 and norm_pname in stem:
+        return 0.95
+
+    # ── 反向排斥：stem 明确指向其他点位 → 不归属当前点位 ──
+    # 场景：五华-丰宁街道的预算文件放在石林县宜奈一楼无线机房目录下，
+    # stem 含「五华-丰宁街道-分纤箱扩容点位」但当前点位是「石林县宜奈...」，
+    # 不应仅凭路径证据归属到石林县宜奈。
+    if stem:
+        # 检查 1：stem 含其他已知点位名
+        if all_point_names_norm:
+            for other_norm in all_point_names_norm:
+                if (
+                    other_norm != norm_pname
+                    and len(other_norm) >= 4
+                    and other_norm in stem
+                ):
+                    return 0.0  # 文件名明确指向另一个点位
+
+        # 检查 2：stem 含「分纤箱扩容」但当前点位名不含
+        # 「分纤箱扩容」是分纤箱类点位的特征后缀，如果文件名含此关键词
+        # 但当前点位不是分纤箱类点位，说明文件属于其他点位。
+        if "分纤箱扩容" in stem and "分纤箱扩容" not in norm_pname:
+            return 0.0
+
+    # ── 构建路径候选（不含 stem）──
+    path_candidates: list[str] = []
+    parent = for_matching(file.parent_dir)
+    if parent and not _is_generic_dir_name(file.parent_dir):
+        path_candidates.append(parent)
+    path_candidates.extend(_path_segments(file))
+    path_text = "-".join(_path_segments(file))
+    if path_text:
+        path_candidates.append(path_text)
+
+    # 全候选 = 路径候选 + stem（用于模糊匹配，但不含 Tier1 的精确检查）
+    all_candidates = list(path_candidates)
+    if stem:
+        all_candidates.append(stem)
+
     best = 0.0
-    for cand in candidates:
+
+    # ── Tier 2: 路径含完整点位名 ──
+    for cand in path_candidates:
         if not cand:
             continue
-        # 仅当候选片段包含完整点位名时给予高置信度；
-        # 反方向子串（点位名包含片段）不可靠，不单独加分。
         if len(norm_pname) >= 4 and norm_pname in cand:
-            best = max(best, 0.9)
+            best = max(best, 0.85)
+
+    # ── Tier 3: 全名模糊匹配（封顶 0.88，确保低于 Tier1 的 0.95）──
+    # 封顶 0.88 而非 0.90：避免浮点精度导致 0.95-0.90=0.0499...<0.05 误判冲突
+    for cand in all_candidates:
+        if not cand:
+            continue
         r = match_strings(cand, pname)
-        s = r.score / 100.0
+        s = min(r.score / 100.0, 0.88)
         if s > best:
             best = s
-        # 点位名拆段匹配（兼容「区-街道-点位类型」复合名）
+
+    # ── Tier 4: 分段模糊匹配（封顶 0.75，防止公共后缀误匹配）──
+    # 「分纤箱扩容点位」是所有点位的公共后缀，partial_ratio 会给 100 分，
+    # 但这不代表文件属于该点位。封顶 0.75 确保分段匹配不会覆盖 Tier1/2/3。
+    for cand in all_candidates:
+        if not cand:
+            continue
         for seg in norm_pname.split("-"):
             if len(seg) >= 2:
                 r2 = match_strings(cand, seg)
-                s2 = r2.score / 100.0
+                s2 = min(r2.score / 100.0, 0.75)
                 if s2 > best:
                     best = s2
+
     return best
 
 
@@ -248,11 +321,20 @@ def _generate_candidates(
     Returns:
         {file_path: [(score, point), ...]} 按得分降序。
     """
+    # 预计算所有点位名的标准化集合，用于反向排斥检查
+    all_point_names_norm: set[str] = set()
+    for p in points:
+        pname = p.get("standard_point_name", "")
+        if pname:
+            norm = for_matching(pname)
+            if norm:
+                all_point_names_norm.add(norm)
+
     candidates: dict[str, list[tuple[float, dict]]] = {}
     for file in files:
         scored: list[tuple[float, dict]] = []
         for p in points:
-            score = _score_file_to_point(file, p)
+            score = _score_file_to_point(file, p, all_point_names_norm)
             if score > 0.0:
                 scored.append((score, p))
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -325,7 +407,7 @@ def _is_budget_file(file: FileEntry, point_name: str) -> bool:
     import re as _re
     budget_exts = {".xls", ".xlsx", ".et", ".csv"}
     budget_keywords = (
-        "预算", "概算", "造价", "报价", "清单",
+        "预算", "概算", "造价", "报价",
         "cost", "estimate", "budget",
         "CPMS结构数据", "嘉陵版", "安全事故防范", "安全生产费依据",
     )
@@ -339,7 +421,7 @@ def _is_budget_file(file: FileEntry, point_name: str) -> bool:
         stem = for_matching(Path(file.file_name).stem)
         stem_no_digits = _re.sub(r"\d+", "", stem).strip("-_ ")
         point_norm = for_matching(point_name)
-        if stem_no_digits and stem_no_digits == point_norm:
+        if _stem_matches_point(stem_no_digits, point_norm):
             return True
 
     return False
@@ -409,6 +491,12 @@ def assign_ownership(
         else:
             result.unassigned_files.append(file.full_path)
 
+    # ── 识别未归属的预算文件（仅关键词匹配，不依赖点位名）──
+    for file_path in result.unassigned_files:
+        file = next((f for f in file_index.files if f.full_path == file_path), None)
+        if file and _is_budget_like_file(file):  # point_name="" → 仅关键词匹配
+            result.unassigned_budget_files.append(file_path)
+
     # 状态计算（基于唯一归属的文件列表，不使用 global_match_point）
     for p in points:
         pid = int(p["id"])
@@ -417,11 +505,12 @@ def assign_ownership(
         result.point_status[pid] = _compute_status(files, pname)
 
     logger.info(
-        "唯一归属决策：%d 文件，已归属=%d，冲突=%d，未归属=%d，点位置=%d",
+        "唯一归属决策：%d 文件，已归属=%d，冲突=%d，未归属=%d（含未归属预算=%d），点位置=%d",
         len(result.decisions),
         result.assigned_count,
         len(result.conflict_files),
         len(result.unassigned_files),
+        len(result.unassigned_budget_files),
         len(points),
     )
     return result

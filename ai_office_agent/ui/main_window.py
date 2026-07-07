@@ -33,6 +33,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(config.ui.title)
         self.resize(config.ui.width, config.ui.height)
+        # 允许窗口双向缩放，设置合理的最小尺寸
+        self.setMinimumSize(900, 600)
 
         self._setup_ui()
         self.statusBar().showMessage("已就绪")

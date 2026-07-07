@@ -71,6 +71,26 @@ def test_classify_other() -> None:
     print("[OK] 未知 → 其他")
 
 
+def test_point_name_with_slash_sanitized() -> None:
+    """v1.6.1：点位名含 / 时，直接删除 /（不是替换为 -）。"""
+    original_name = "SL-DZCC/III-GJ001"
+    point_files = {
+        original_name: [
+            _fe("siteA.dwg", "/proj/siteA/siteA.dwg"),
+        ],
+    }
+    plan = build_organize_plan(point_files, "/proj")
+    for pname, items in plan.points.items():
+        for r in items:
+            path_str = str(r.target_dir).replace("\\", "/")
+            parts = path_str.split("/设计文件/其他区县/")
+            assert len(parts) == 2, f"路径格式异常: {path_str}"
+            point_segment = parts[1].split("/")[0]
+            assert point_segment == "SL-DZCCIII-GJ001", \
+                f"点位名应删除 /：{point_segment}（期望 SL-DZCCIII-GJ001）"
+    print("[OK] 点位名含 / → 直接删除 /")
+
+
 def test_organize_plan() -> None:
     """整理计划生成。"""
     point_files = {
@@ -88,7 +108,7 @@ def test_organize_plan() -> None:
 
 
 def test_apply_organize() -> None:
-    """执行整理 - 实际移动文件。"""
+    """执行整理 - 实际移动文件（v1.6：目标路径在 设计文件/ 下）。"""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         # 创建源文件
@@ -113,9 +133,10 @@ def test_apply_organize() -> None:
         result = apply_organize_plan(plan)
 
         assert result["moved"] == 3, f"应移动 3 个: {result}"
-        assert (root / "siteA" / "图纸" / "siteA.dwg").exists()
-        assert (root / "siteA" / "图纸" / "siteA.pdf").exists()
-        assert (root / "siteA" / "预算" / "预算.xlsx").exists()
+        # v1.6：目标路径 = 设计文件/{区县}/siteA/图纸/，测试无区县→"其他区县"
+        assert (root / "设计文件" / "其他区县" / "siteA" / "图纸" / "siteA.dwg").exists()
+        assert (root / "设计文件" / "其他区县" / "siteA" / "图纸" / "siteA.pdf").exists()
+        assert (root / "设计文件" / "其他区县" / "siteA" / "预算" / "预算.xlsx").exists()
         print(f"[OK] 执行整理: 移动={result['moved']} 冲突={len(plan.conflicts)}")
 
 
@@ -176,6 +197,7 @@ def main() -> int:
     test_classify_pdf_matches_cad()
     test_classify_budget()
     test_classify_other()
+    test_point_name_with_slash_sanitized()
     test_organize_plan()
     test_organize_plan_no_cross_point_drawing()
     test_apply_organize()

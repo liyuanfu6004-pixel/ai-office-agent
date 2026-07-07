@@ -85,8 +85,8 @@ class NavTree(QTreeWidget):
             child = QTreeWidgetItem(project_group, [name])
             child.setData(0, Qt.ItemDataRole.UserRole, key)
 
-        # 扫描结果中心
-        scan_item = QTreeWidgetItem(self, ["🔍  扫描结果中心"])
+        # 扫描中心
+        scan_item = QTreeWidgetItem(self, ["🔍  扫描中心"])
         scan_item.setFont(0, _bold_font())
         scan_item.setData(0, Qt.ItemDataRole.UserRole, "scan_center")
 

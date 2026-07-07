@@ -2,6 +2,67 @@
 
 > 按版本倒序记录。每个开发任务完成后追加一条。
 
+## [v1.5.6] - 2026-07-08 — 预算识别修复与 UI 优化
+
+### 预算识别修复
+
+#### 删除「清单」关键词
+- 从 `_BUDGET_KEYWORDS` / `_is_budget_like_file` / `_is_budget_file` 中移除 `"清单"`，避免 `设备清单`、`材料清单` 等非预算文件被误判。
+
+#### stem_no_digits 精确匹配 → prefix 匹配
+- 旧逻辑：`stem_no_digits == point_norm` 精确相等。点位名 `安宁-县街街道-分纤箱扩容点位`，文件 `安宁-县街街道20250707.xlsx` → stem_no_digits=`安宁-县街街道` ≠ 完整点位名 → 漏判。
+- 新逻辑：新增 `_stem_matches_point()` 函数，支持 `point_norm.startswith(stem_no_digits + "-")` prefix 匹配。
+
+#### 4 层分层评分（_score_file_to_point 重构）
+- **Tier 1**：stem 含完整点位名 → **0.95**（立即返回，最强证据）
+- **Tier 2**：路径含完整点位名 → **0.85**
+- **Tier 3**：全名模糊匹配 → 封顶 **0.88**（低于 Tier 1 避免浮点精度冲突）
+- **Tier 4**：分段模糊匹配 → 封顶 **0.75**（防止 `分纤箱扩容点位` 等公共后缀 partial_ratio=100 误匹配）
+- 解决文件名含点位A、路径在点位B目录下的冲突：点位A 0.95 vs 点位B 0.88 → 归属点位A。
+
+#### 反向排斥逻辑
+- stem 含其他已知点位名（`all_point_names_norm`）→ return 0.0（文件属于另一个点位）
+- stem 含 `分纤箱扩容` 但当前点位名不含 → return 0.0（防止其他点位预算文件被误归属到目录所在点位）
+
+#### 未归属预算文件识别
+- `OwnershipResult` 新增 `unassigned_budget_files` 字段，将文件名含预算关键词但无法确定点位的文件单独标记，待人工确认。
+- `_serialize_ownership` 补上 `unassigned_budget_files` 字段。
+
+#### 双「设计文件」目录修复
+- `build_organize_plan` 中若用户选择的扫描目录本身就叫「设计文件」，直接在此目录下整理，避免出现 `设计文件/设计文件/` 嵌套路径。
+
+### UI 优化
+
+#### 重命名与按钮合并
+- 「扫描结果中心」→「扫描中心」
+- 「文件整理预览」+「执行整理」合并为一个「整理文件」按钮，点击后先弹预览对话框（含「整理」+「取消」按钮），确认后执行移动。
+
+#### 扫描中心项目选择器
+- 取代之前「必须在项目列表双击项目」的流程，在扫描中心顶部增加项目下拉框，直接选择已导入项目即可扫描。
+- ContentArea 在切换到扫描中心时自动刷新项目列表。
+
+#### 窗口横向缩放修复
+- `StatCard` 最小宽度 130px → 100px，降低窗口隐含最小宽度（原 1271px ≈ 默认 1280px，导致无法横向缩小）。
+- `MainWindow` 显式设置 `setMinimumSize(900, 600)`。
+
+#### 项目选择器布局调整
+- 项目选择器从 info_bar 移出，成为标题下方的独立横幅，避免与按钮行重叠。
+
+### 修改文件
+
+- `core/ownership.py` — 预算关键词、stem matching、4 层评分、反向排斥、unassigned_budget_files
+- `core/file_organizer.py` — 预算关键词、stem matching、「设计文件」目录修复
+- `core/scan_controller.py` — `_serialize_ownership` 补字段
+- `ui/widgets/pages/scan_center_page.py` — 重命名、按钮合并、项目选择器、StatCard 宽度、布局调整
+- `ui/widgets/nav_tree.py` — 「扫描中心」命名
+- `ui/widgets/content_area.py` — 刷新项目列表
+- `ui/main_window.py` — `setMinimumSize(900, 600)`
+- `tests/test_v1_5_ownership.py` — 新增 v1.5.6/v1.5.7 测试
+
+### 验证
+
+- `python -m pytest tests/test_v1_3_smoke.py tests/test_v1_5_ownership.py`：27/27 全部通过
+
 ## [v1.5.5] - 2026-07-07 — 散落文件识别与整理闭环
 
 ### 问题

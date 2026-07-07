@@ -119,10 +119,15 @@ class ContentArea(QFrame):
         self._page_index[key] = index
 
     def switch_to(self, key: str) -> None:
-        """切换到指定页面；未注册时忽略。"""
+        """切换到指定页面；未注册时忽略。
+
+        切换到扫描中心时自动刷新项目列表，确保下拉框包含最新导入的项目。
+        """
         index = self._page_index.get(key)
         if index is not None:
             self.page_stack.setCurrentIndex(index)
+        if key == "scan_center":
+            self._scan_center_page._refresh_project_combo()
 
     def show_project_detail(self, project_id: int) -> None:
         """载入项目详情并切换到详情页。

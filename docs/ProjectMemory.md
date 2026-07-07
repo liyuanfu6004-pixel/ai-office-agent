@@ -37,27 +37,39 @@
 
 ## 5. 当前版本
 
-**v1.5.5**
+**v1.5.6**
 
 ## 6. 当前开发阶段
 
-**v1.5.4 点位明细导入去重 — 开发完成** ✅
+**v1.5.6 预算识别修复与 UI 优化 — 开发完成** ✅
 
-### 核心修复：按任务名称去重
+### 预算识别修复
 
-- 点位明细/规模表导入时，按标准化后的点位/任务名称自动去重。
-- 同名任务只导入一次，避免 F 列「任务名称」重复导致 `point_dictionary` 出现大量重复点位。
-- 重复行不新增点位，但会补充首条记录中为空的区县和动态字段。
-- 导入进度和完成提示显示跳过的重复点位/任务名称数量。
-- 导入预览增加自动去重提示。
+- 删除 `"清单"` 关键词，避免 `设备清单` 等非预算文件误判。
+- stem_no_digits 精确匹配 → prefix 匹配（`point_norm.startswith(stem_no_digits + "-")`），解决点位名含后缀描述时漏判。
+- `_score_file_to_point` 重构为 4 层分层评分（Tier 1~4），解决文件名含点位A但路径在点位B目录下的所有权冲突。
+- 反向排斥逻辑：stem 含其他已知点位名或含 `分纤箱扩容` 但当前点位名不含 → 不归属当前点位。
+- `OwnershipResult` 新增 `unassigned_budget_files` 字段，标记关键词预算但无法确定点位的文件。
+- `build_organize_plan`：用户选择「设计文件」目录时不再嵌套 `设计文件/设计文件/`。
 
-### v1.5.4 修改模块
+### UI 优化
 
-- `core/scale_table_engine.py` — 新增 `PointRecordBuildResult` / `build_point_records_with_stats`，`build_point_records` 兼容旧调用但内部去重。
-- `data_import/scale_import_worker.py` — 使用带统计的构建函数，导入完成回传重复跳过数。
-- `ui/widgets/pages/project_detail_page.py` — 导入完成提示显示重复跳过数量。
-- `ui/widgets/scale_table_wizard.py` — 预览阶段提示导入时将按点位/任务名称自动去重。
-- `tests/test_v1_1_smoke.py` — 增加重复任务名称去重、区县补全、动态字段补全测试。
+- 「扫描结果中心」→「扫描中心」。
+- 「文件整理预览」+「执行整理」合并为「整理文件」按钮（预览→确认→执行）。
+- 扫描中心新增项目选择下拉框，直接选择已导入项目。
+- 窗口横向缩放修复（StatCard 130px→100px + MainWindow.setMinimumSize）。
+- 项目选择器移出 info_bar，成为标题下方独立横幅。
+
+### v1.5.6 修改模块
+
+- `core/ownership.py` — 关键词清理、stem matching、4 层评分、反向排斥、unassigned_budget_files
+- `core/file_organizer.py` — 关键词清理、stem matching、「设计文件」目录修复
+- `core/scan_controller.py` — 序列化补字段
+- `ui/widgets/pages/scan_center_page.py` — 重命名、按钮合并、项目选择器、StatCard 宽度、布局调整
+- `ui/widgets/nav_tree.py` — 命名
+- `ui/widgets/content_area.py` — 刷新项目列表
+- `ui/main_window.py` — 最小窗口尺寸
+- `tests/test_v1_5_ownership.py` — 新增 2 项测试
 
 **v1.5.5 散落文件识别与整理闭环 — 开发完成** ✅
 

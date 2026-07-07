@@ -16,6 +16,7 @@ from .matcher import (
     is_match,
     match_sheet,
 )
+from .normalizer import for_matching
 from ..utils.logger import setup_logger
 
 logger = setup_logger()
@@ -908,17 +909,43 @@ def _cell_text(row: dict, header: str | None) -> str:
 # ====================================================================
 
 
-def build_point_records(
+@dataclass
+class PointRecordBuildResult:
+    """点位记录构建结果（含去重统计）。"""
+
+    records: list[dict] = field(default_factory=list)
+    skipped_empty: int = 0
+    skipped_duplicates: int = 0
+    duplicate_names: list[str] = field(default_factory=list)
+
+
+def _merge_duplicate_point_record(existing: dict, duplicate: dict) -> None:
+    """把重复点位行中的有效空字段补充到首条记录。"""
+    if not existing.get("county") and duplicate.get("county"):
+        existing["county"] = duplicate["county"]
+
+    existing_dynamic = existing.setdefault("dynamic_data", {}) or {}
+    duplicate_dynamic = duplicate.get("dynamic_data", {}) or {}
+    for key, value in duplicate_dynamic.items():
+        if not existing_dynamic.get(key) and value:
+            existing_dynamic[key] = value
+    existing["dynamic_data"] = existing_dynamic
+
+
+def build_point_records_with_stats(
     data_rows: list[dict],
     mapping: dict,
     dynamic_fields: list[dict],
     use_concatenation: bool,
-) -> list[dict]:
-    """将 Excel 数据行转为 point_dictionary 表记录。
+) -> PointRecordBuildResult:
+    """将 Excel 数据行转为 point_dictionary 表记录，并按点位/任务名称去重。
 
-    v1.2.1：仅导入用户手动选中的动态字段。
+    v1.5.4：同一次导入内，标准化后的点位/任务名称重复时只保留首条，
+    后续重复行仅用于补充空区县和空动态字段。
     """
-    records: list[dict] = []
+    result = PointRecordBuildResult()
+    seen: dict[str, dict] = {}
+
     for row in data_rows:
         point_name = generate_point_name(
             row,
@@ -928,6 +955,7 @@ def build_point_records(
             use_concatenation=use_concatenation,
         )
         if not point_name:
+            result.skipped_empty += 1
             continue
 
         county_field = mapping.get("county")
@@ -944,12 +972,45 @@ def build_point_records(
         for df in dynamic_fields:
             dynamic_data[df["name"]] = _cell_text(row, df["name"])
 
-        records.append({
+        record = {
             "standard_point_name": point_name,
             "county": county,
             "original_name": original,
             "dynamic_data": dynamic_data,
-        })
+        }
 
-    logger.info("规模表记录构建：%d 条", len(records))
-    return records
+        dedupe_key = "".join(for_matching(point_name).split())
+        if not dedupe_key:
+            result.skipped_empty += 1
+            continue
+
+        existing = seen.get(dedupe_key)
+        if existing is not None:
+            result.skipped_duplicates += 1
+            result.duplicate_names.append(point_name)
+            _merge_duplicate_point_record(existing, record)
+            continue
+
+        seen[dedupe_key] = record
+        result.records.append(record)
+
+    logger.info(
+        "规模表记录构建：%d 条唯一点位，跳过重复=%d，空点位=%d",
+        len(result.records), result.skipped_duplicates, result.skipped_empty,
+    )
+    return result
+
+
+def build_point_records(
+    data_rows: list[dict],
+    mapping: dict,
+    dynamic_fields: list[dict],
+    use_concatenation: bool,
+) -> list[dict]:
+    """将 Excel 数据行转为 point_dictionary 表记录。
+
+    v1.5.4：兼容旧调用，内部已按点位/任务名称去重。
+    """
+    return build_point_records_with_stats(
+        data_rows, mapping, dynamic_fields, use_concatenation,
+    ).records

@@ -24,21 +24,21 @@ def _fe(name: str, path: str, ext: str = ".dwg") -> FileEntry:
 def test_cad_index() -> None:
     """CAD 索引构建正确。"""
     files = [
-        _fe("设计图.dwg", "/proj/siteA/设计图.dwg"),
-        _fe("设计图.dxf", "/proj/siteA/设计图.dxf"),
+        _fe("siteA.dwg", "/proj/siteA/siteA.dwg"),
+        _fe("siteA.dxf", "/proj/siteA/siteA.dxf"),
         _fe("预算.xlsx", "/proj/siteA/预算.xlsx"),
         _fe("报告.pdf", "/proj/siteA/报告.pdf"),
     ]
     ci = build_cad_index(files)
-    assert "设计图" in ci, f"应包含 stem '设计图': {list(ci.keys())}"
-    assert len(ci["设计图"]) == 2  # dwg + dxf
+    assert "sitea" in ci, f"应包含 stem 'siteA': {list(ci.keys())}"
+    assert len(ci["sitea"]) == 2  # dwg + dxf
     print("[OK] CAD 索引构建")
 
 
 def test_classify_drawing() -> None:
     """直接图纸文件归类为图纸。"""
     ci: dict = {}
-    f = _fe("设计图.dwg", "/proj/siteA/设计图.dwg")
+    f = _fe("siteA.dwg", "/proj/siteA/siteA.dwg")
     r = classify_file(f, ci, "siteA", "/proj")
     assert r.category == "图纸", f"dwg 应为图纸: {r.category}"
     print("[OK] dwg → 图纸")
@@ -46,8 +46,8 @@ def test_classify_drawing() -> None:
 
 def test_classify_pdf_matches_cad() -> None:
     """同名 PDF 匹配 CAD → 图纸。"""
-    ci = {"设计图": [_fe("设计图.dwg", "/proj/siteA/设计图.dwg")]}
-    f = _fe("设计图.pdf", "/proj/siteA/设计图.pdf", ext=".pdf")
+    ci = {"sitea": [_fe("siteA.dwg", "/proj/siteA/siteA.dwg")]}
+    f = _fe("siteA.pdf", "/proj/siteA/siteA.pdf", ext=".pdf")
     r = classify_file(f, ci, "siteA", "/proj")
     assert r.category == "图纸", f"同名PDF应为图纸: {r.category}"
     print("[OK] 同名PDF → 图纸")
@@ -75,8 +75,8 @@ def test_organize_plan() -> None:
     """整理计划生成。"""
     point_files = {
         "siteA": [
-            _fe("设计图.dwg", "/proj/siteA/设计图.dwg"),
-            _fe("设计图.pdf", "/proj/siteA/设计图.pdf", ext=".pdf"),
+            _fe("siteA.dwg", "/proj/siteA/siteA.dwg"),
+            _fe("siteA.pdf", "/proj/siteA/siteA.pdf", ext=".pdf"),
             _fe("预算.xlsx", "/proj/siteA/预算.xlsx", ext=".xlsx"),
         ],
     }
@@ -93,18 +93,18 @@ def test_apply_organize() -> None:
         root = Path(tmp)
         # 创建源文件
         (root / "siteA").mkdir()
-        dwg = root / "siteA" / "设计图.dwg"
-        pdf = root / "siteA" / "设计图.pdf"
+        dwg = root / "siteA" / "siteA.dwg"
+        pdf = root / "siteA" / "siteA.pdf"
         xls = root / "siteA" / "预算.xlsx"
         dwg.write_text("dwg")
         pdf.write_text("pdf")
         xls.write_text("xls")
 
         files = [
-            FileEntry(file_name="设计图.dwg", full_path=str(dwg), extension=".dwg",
-                      normalized_name="shejitu", parent_dir="siteA", parent_path=str(root / "siteA")),
-            FileEntry(file_name="设计图.pdf", full_path=str(pdf), extension=".pdf",
-                      normalized_name="shejitu", parent_dir="siteA", parent_path=str(root / "siteA")),
+            FileEntry(file_name="siteA.dwg", full_path=str(dwg), extension=".dwg",
+                      normalized_name="sitea", parent_dir="siteA", parent_path=str(root / "siteA")),
+            FileEntry(file_name="siteA.pdf", full_path=str(pdf), extension=".pdf",
+                      normalized_name="sitea", parent_dir="siteA", parent_path=str(root / "siteA")),
             FileEntry(file_name="预算.xlsx", full_path=str(xls), extension=".xlsx",
                       normalized_name="yusuan", parent_dir="siteA", parent_path=str(root / "siteA")),
         ]
@@ -113,8 +113,8 @@ def test_apply_organize() -> None:
         result = apply_organize_plan(plan)
 
         assert result["moved"] == 3, f"应移动 3 个: {result}"
-        assert (root / "siteA" / "图纸" / "设计图.dwg").exists()
-        assert (root / "siteA" / "图纸" / "设计图.pdf").exists()
+        assert (root / "siteA" / "图纸" / "siteA.dwg").exists()
+        assert (root / "siteA" / "图纸" / "siteA.pdf").exists()
         assert (root / "siteA" / "预算" / "预算.xlsx").exists()
         print(f"[OK] 执行整理: 移动={result['moved']} 冲突={len(plan.conflicts)}")
 

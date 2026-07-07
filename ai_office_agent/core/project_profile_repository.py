@@ -150,8 +150,18 @@ def get_project_folder(
     return row["project_folder"] if row else None
 
 
-def delete_profile(conn: sqlite3.Connection, project_id: int) -> None:
+def profile_exists(conn: sqlite3.Connection, project_id: int) -> bool:
+    """判断项目配置是否存在。"""
+    row = conn.execute(
+        "SELECT 1 FROM project_profiles WHERE project_id = ? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    return row is not None
+
+
+def delete_profile(conn: sqlite3.Connection, project_id: int) -> bool:
     """删除项目配置。"""
-    conn.execute("DELETE FROM project_profiles WHERE project_id = ?", (project_id,))
+    cur = conn.execute("DELETE FROM project_profiles WHERE project_id = ?", (project_id,))
     conn.commit()
     logger.info("项目配置已删除：project_id=%s", project_id)
+    return cur.rowcount > 0

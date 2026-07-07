@@ -37,9 +37,73 @@
 
 ## 5. 当前版本
 
-**v1.5.0**
+**v1.5.5**
 
 ## 6. 当前开发阶段
+
+**v1.5.4 点位明细导入去重 — 开发完成** ✅
+
+### 核心修复：按任务名称去重
+
+- 点位明细/规模表导入时，按标准化后的点位/任务名称自动去重。
+- 同名任务只导入一次，避免 F 列「任务名称」重复导致 `point_dictionary` 出现大量重复点位。
+- 重复行不新增点位，但会补充首条记录中为空的区县和动态字段。
+- 导入进度和完成提示显示跳过的重复点位/任务名称数量。
+- 导入预览增加自动去重提示。
+
+### v1.5.4 修改模块
+
+- `core/scale_table_engine.py` — 新增 `PointRecordBuildResult` / `build_point_records_with_stats`，`build_point_records` 兼容旧调用但内部去重。
+- `data_import/scale_import_worker.py` — 使用带统计的构建函数，导入完成回传重复跳过数。
+- `ui/widgets/pages/project_detail_page.py` — 导入完成提示显示重复跳过数量。
+- `ui/widgets/scale_table_wizard.py` — 预览阶段提示导入时将按点位/任务名称自动去重。
+- `tests/test_v1_1_smoke.py` — 增加重复任务名称去重、区县补全、动态字段补全测试。
+
+**v1.5.5 散落文件识别与整理闭环 — 开发完成** ✅
+
+### 核心修复：识别选择目录下的散落文件并整理到标准点位目录
+
+- 扫描继续递归遍历用户选择的项目文件夹下所有文件。
+- 归属判断从原来的「文件名/父目录必须等于点位名」扩展为：
+  - 文件名 stem
+  - 父目录
+  - 全部祖先目录片段
+  - 项目相对路径文本
+- 泛分类目录名（图纸/预算/其他文件/other/cad/pdf/资料 等）不再作为点位身份证据。
+- 图纸类文件仍走严格证据，不恢复 fuzzy，避免跨点位图纸污染回归。
+- 预算类 PDF 不被简单当成图纸严格拒绝，可按预算资料参与归属，最终分类为预算。
+- 未识别到归属文件时的建议文案不再误导为「未在文件系统中找到对应文件夹；请创建点位文件夹并导入图纸」，改为提示检查文件名/路径或人工确认。
+- 有归属文件时建议提示可执行整理创建标准点位文件夹并分类。
+- 文件整理预览/执行继续读取 Scan Session 中的归属结果，目标目录使用 `scan_path`，不重新扫描、不重新归属。
+
+### v1.5.5 修改模块
+
+- `core/ownership.py` — 扩展归属证据、泛分类目录过滤、预算 PDF 跳过图纸严格规则。
+- `core/scan_result.py` — 调整未匹配/已匹配建议文案。
+- `core/file_organizer.py` — `_drawing_belongs_to_point` 与 ownership 严格证据对齐；新增预算类文件判断。
+- `tests/test_v1_5_ownership.py` — 新增散落文件识别、泛分类目录不作为证据、预算 PDF 可归属测试。
+- `tests/test_scan_session.py` — 新增建议文案与整理目标目录测试。
+
+**v1.5.3 扫描结果生命周期管理 — 开发完成** ✅
+
+### 核心修复：Scan Session + 禁止重复扫描
+
+- 一次用户主动扫描完成后，生成当前项目 Scan Session。
+- Scan Session 保存 `project_id`、`scan_path`、`scan_time`、文件索引、唯一归属结果和 ScanResult。
+- 文件整理预览、文件整理执行、点位详情、分类统计全部读取当前扫描结果，禁止内部再次调用 scanner。
+- 文件整理预览无有效 Scan Session 时提示「请先执行扫描」，不会自动扫描。
+- 扫描按钮生命周期：初次为「执行扫描」，有有效 Scan Session 后显示「重新扫描」。
+- 修改扫描目录会使当前 Scan Session 失效，等待用户主动重新扫描。
+- 保持 v1.5 唯一归属模型：`assign_ownership` 只在显式扫描入口执行，整理预览/执行只消费已保存归属结果。
+
+### v1.5.3 修改模块
+
+- `core/scan_controller.py` — 新增 `scan_session` 表及保存/读取/失效辅助函数；`run_scan` 持久化扫描工件。
+- `core/scan_result.py` — 新增 `ScanBuildOutput` / `build_scan_results_with_artifacts`，保留旧 `build_scan_results` 兼容入口。
+- `core/file_organizer.py` — 新增 `build_organize_plan_from_scan_session`，不扫描、不重新归属。
+- `ui/widgets/pages/scan_center_page.py` — 文件整理预览/执行改为读取 Scan Session；调整按钮文案与目录变更失效逻辑。
+- `ui/widgets/pages/project_detail_page.py` — 遗留沙盒扫描函数改为不触发扫描。
+- `tests/test_scan_session.py` — 新增 Scan Session 生命周期测试。
 
 **v1.5.0 唯一归属模型（Single Ownership Model）— 开发完成** ✅
 
@@ -780,7 +844,7 @@ D:\AI-Office-Agent\
 ## 10. 下一步规划
 
 > 按开发路线，下一阶段：
-**v1.5 — 待用户指定**
+**v1.6 — 待用户指定**
 
 ## 11. 待办/约束
 

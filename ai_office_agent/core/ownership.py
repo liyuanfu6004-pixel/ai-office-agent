@@ -48,8 +48,14 @@ OWNERSHIP_THRESHOLD: float = 0.75
 # Top1 与 Top2 得分差小于此值 → 冲突，不归属
 CONFLICT_MARGIN: float = 0.05
 
-# 图纸文件扩展名（必须 stem 精确匹配）
+# 图纸文件扩展名（必须 stem/路径精确匹配；预算 PDF 例外走预算识别）
 DRAWING_EXTS: frozenset[str] = frozenset({".dwg", ".dxf", ".bak", ".pdf"})
+
+# 泛分类目录名：只能作为文件类别线索，不能作为点位身份线索。
+_GENERIC_DIR_NAMES: frozenset[str] = frozenset({
+    "图纸", "设计图", "施工图", "预算", "其他文件", "其他", "资料",
+    "other", "cad", "pdf", "dwg", "drawing", "drawings", "budget", "cost",
+})
 
 
 # ====================================================================
@@ -105,34 +111,74 @@ class OwnershipResult:
 # ====================================================================
 
 
+def _is_generic_dir_name(name: str) -> bool:
+    """判断路径片段是否只是泛分类目录名。"""
+    norm = for_matching(name)
+    return norm in {for_matching(x) for x in _GENERIC_DIR_NAMES}
+
+
+def _path_segments(file: FileEntry) -> list[str]:
+    """返回文件完整路径中的标准化非泛分类片段。"""
+    segments: list[str] = []
+    try:
+        for seg in Path(file.full_path).parts:
+            if not seg or seg in ("/", "\\"):
+                continue
+            norm = for_matching(Path(seg).stem if "." in seg else seg)
+            if norm and not _is_generic_dir_name(seg):
+                segments.append(norm)
+    except Exception:
+        pass
+    return segments
+
+
+def _is_budget_like_file(file: FileEntry, point_name: str = "") -> bool:
+    """预算类文件判断；用于 PDF 预算文件跳过图纸严格规则。"""
+    import re as _re
+    budget_exts = {".xls", ".xlsx", ".et", ".csv"}
+    budget_keywords = (
+        "预算", "概算", "造价", "报价", "清单",
+        "cost", "estimate", "budget",
+        "CPMS结构数据", "嘉陵版", "安全事故防范", "安全生产费依据",
+    )
+    norm = for_matching(file.file_name)
+    for kw in budget_keywords:
+        if for_matching(kw) in norm:
+            return True
+    if point_name and file.extension in budget_exts:
+        stem = for_matching(Path(file.file_name).stem)
+        stem_no_digits = _re.sub(r"\d+", "", stem).strip("-_ ")
+        if stem_no_digits and stem_no_digits == for_matching(point_name):
+            return True
+    return False
+
+
 def _is_drawing_file(file: FileEntry) -> bool:
     """判断是否图纸类文件。"""
     return file.extension in DRAWING_EXTS
 
 
 def _stem_match(file: FileEntry, point_name: str) -> bool:
-    """图纸类文件的 stem 精确匹配规则。
+    """图纸类文件的严格归属证据（v1.5.3：仅 stem 匹配，禁止路径匹配）。
 
-    满足任一即可：
+    v1.5.3 修复：移除"路径包含点位名"规则。
+    旧规则导致两个严重问题：
+    1. 文件被误整理到错误目录后，路径包含错误点位名 → 错误归属
+    2. 文件 stem 匹配点位A，但路径包含点位B → 冲突 → 不归属任何点位
+
+    新规则（仅 stem）：
     1. 文件 stem 标准化后 == 点位名标准化后
-    2. 文件 stem 标准化后以点位名标准化后开头（兼容「点位名202606121601.bak」）
-    3. 文件完整路径标准化后包含点位名标准化后（目录段匹配）
+    2. 文件 stem 标准化后以点位名标准化后开头（兼容带时间戳后缀的文件名）
     """
     norm_point = for_matching(point_name)
     if not norm_point:
         return False
 
     norm_stem = for_matching(Path(file.file_name).stem)
-    norm_path = for_matching(file.full_path)
-    norm_parent = for_matching(file.parent_dir)
 
     if norm_stem == norm_point:
         return True
     if norm_stem.startswith(norm_point):
-        return True
-    if norm_point in norm_path:
-        return True
-    if norm_point in norm_parent:
         return True
     return False
 
@@ -147,28 +193,25 @@ def _score_file_to_point(file: FileEntry, point: dict) -> float:
     if not pname:
         return 0.0
 
-    # 图纸类文件：强制 stem 精确匹配
-    if _is_drawing_file(file):
+    # 图纸类文件：强制严格证据；预算 PDF 作为预算资料参与普通归属。
+    if _is_drawing_file(file) and not _is_budget_like_file(file, pname):
         if _stem_match(file, pname):
             return 1.0
         return 0.0
 
-    # 非图纸类文件：fuzzy 匹配
-    # 候选字符串：文件名 stem + 父目录名 + 路径段
+    # 非图纸/预算 PDF：fuzzy 匹配
+    # 候选字符串：文件名 stem + 父目录名 + 全路径片段 + 标准化相对路径文本
     candidates: list[str] = []
     stem = for_matching(Path(file.file_name).stem)
     if stem:
         candidates.append(stem)
     parent = for_matching(file.parent_dir)
-    if parent:
+    if parent and not _is_generic_dir_name(file.parent_dir):
         candidates.append(parent)
-    # 路径最后3段
-    try:
-        for seg in Path(file.full_path).parts[-3:]:
-            if seg:
-                candidates.append(for_matching(seg))
-    except Exception:
-        pass
+    candidates.extend(_path_segments(file))
+    path_text = "-".join(_path_segments(file))
+    if path_text:
+        candidates.append(path_text)
 
     norm_pname = for_matching(pname)
     if not norm_pname:
@@ -178,6 +221,10 @@ def _score_file_to_point(file: FileEntry, point: dict) -> float:
     for cand in candidates:
         if not cand:
             continue
+        # 仅当候选片段包含完整点位名时给予高置信度；
+        # 反方向子串（点位名包含片段）不可靠，不单独加分。
+        if len(norm_pname) >= 4 and norm_pname in cand:
+            best = max(best, 0.9)
         r = match_strings(cand, pname)
         s = r.score / 100.0
         if s > best:

@@ -151,7 +151,8 @@ def main() -> int:
         # 验证扫描中心页面已注册
         scan_page = ca.page_stack.widget(ca._page_index["scan_center"])
         assert hasattr(scan_page, "scan_btn"), "扫描中心应有扫描按钮"
-        assert hasattr(scan_page, "rescan_btn"), "扫描中心应有重新扫描按钮"
+        assert scan_page.scan_btn.text() == "执行扫描", "初始扫描按钮应显示执行扫描"
+        assert not hasattr(scan_page, "rescan_btn"), "扫描中心不应再有独立重新扫描按钮"
         assert hasattr(scan_page, "stat_cards"), "扫描中心应有统计卡片"
         assert hasattr(scan_page, "result_table"), "扫描中心应有结果列表"
         assert hasattr(scan_page, "preview_panel"), "扫描中心应有详情预览面板"

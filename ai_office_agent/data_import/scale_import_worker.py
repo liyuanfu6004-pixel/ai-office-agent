@@ -20,7 +20,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from ..config import AppConfig
 from ..core import project_profile_repository, projects_repository
 from ..core.database import Database
-from ..core.scale_table_engine import build_point_records
+from ..core.scale_table_engine import build_point_records_with_stats
 from ..utils.logger import setup_logger
 
 logger = setup_logger()
@@ -112,12 +112,13 @@ class ScaleImportWorker(QObject):
 
         # 构建点位记录
         try:
-            records = build_point_records(
+            build_result = build_point_records_with_stats(
                 self._data_rows,
                 self._mapping,
                 self._dynamic_fields,
                 self._use_concatenation,
             )
+            records = build_result.records
         except Exception as exc:
             logger.exception("构建点位记录失败")
             self.failed.emit(f"解析数据时出错：{exc}")
@@ -127,7 +128,11 @@ class ScaleImportWorker(QObject):
             self.failed.emit("未能从数据中识别到任何有效点位，请检查字段映射。")
             return
 
-        self.progress.emit(40, f"生成 {len(records)} 条点位记录 ...")
+        duplicate_msg = (
+            f"，跳过 {build_result.skipped_duplicates} 条重复任务名称"
+            if build_result.skipped_duplicates else ""
+        )
+        self.progress.emit(40, f"生成 {len(records)} 条唯一点位记录{duplicate_msg} ...")
 
         # 将动态字段序列化为 JSON 存入 original_name 的扩展
         # （original_name 用于溯源，dynamic_data 另存）
@@ -164,8 +169,11 @@ class ScaleImportWorker(QObject):
                 },
             )
 
-            self.progress.emit(100, f"导入完成：{inserted} 条")
-            self.succeeded.emit(inserted, 0)
+            done_msg = f"导入完成：{inserted} 条"
+            if build_result.skipped_duplicates:
+                done_msg += f"，跳过重复 {build_result.skipped_duplicates} 条"
+            self.progress.emit(100, done_msg)
+            self.succeeded.emit(inserted, build_result.skipped_duplicates)
 
         except Exception as exc:
             logger.exception("规模表导入失败")

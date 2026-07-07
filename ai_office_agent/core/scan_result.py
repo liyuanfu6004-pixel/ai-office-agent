@@ -36,6 +36,17 @@ from pathlib import Path
 from typing import Any
 
 
+
+
+@dataclass
+class ScanBuildOutput:
+    """一次扫描构建产物（用于持久化 Scan Session）。"""
+
+    summary: "ScanResultSummary"
+    file_index: Any | None = None
+    ownership: Any | None = None
+    scan_path: str = ""
+
 # ====================================================================
 # 匹配状态枚举
 # ====================================================================
@@ -189,6 +200,8 @@ class ScanResultItem:
             item.scanned_files = match_result.get("scanned_files", [])
             item.cad_file_count = match_result.get("cad_file_count", 0)
             item.budget_file_count = match_result.get("budget_file_count", 0)
+            item.file_owner_point_id = match_result.get("file_owner_point_id")
+            item.match_confidence = match_result.get("match_confidence", 0.0)
 
             # 判断匹配状态
             if match_result.get("is_multi_candidate", False):
@@ -212,13 +225,16 @@ class ScanResultItem:
         parts = []
         if item.match_status == MatchStatus.MATCHED:
             if item.cad_status == "有" and item.budget_status == "有":
-                parts.append("匹配成功，文件齐全")
+                parts.append("已识别到归属文件，文件齐全；执行整理可创建标准点位文件夹并分类")
             elif item.cad_status == "无":
-                parts.append("缺少 CAD 图纸文件")
+                parts.append("已识别到相关资料，未识别到严格匹配的 CAD 图纸")
+                if item.budget_status == "有":
+                    parts.append("执行整理可先归类已有预算/资料文件")
             elif item.budget_status == "无":
-                parts.append("缺少预算文件")
+                parts.append("已识别到归属文件，未识别到预算文件")
+                parts.append("执行整理可创建标准点位文件夹并分类已有文件")
             else:
-                parts.append("匹配成功")
+                parts.append("已识别到归属文件；执行整理可创建标准点位文件夹并分类")
         elif item.match_status == MatchStatus.PARTIAL_MATCH:
             parts.append("建议人工确认匹配")
             if item.cad_status == "无":
@@ -228,9 +244,8 @@ class ScanResultItem:
         elif item.match_status == MatchStatus.MULTIPLE_MATCH:
             parts.append("存在多个候选文件夹，建议人工选择")
         elif item.match_status == MatchStatus.NOT_FOUND:
-            parts.append("未在文件系统中找到对应文件夹")
-            if item.cad_status == "无":
-                parts.append("请创建点位文件夹并导入图纸")
+            parts.append("已扫描项目文件夹，但未识别到该点位的归属文件")
+            parts.append("请检查文件名或路径是否包含点位信息，或后续人工确认")
         return "；".join(parts) if parts else "—"
 
     def to_dict(self) -> dict:
@@ -254,6 +269,8 @@ class ScanResultItem:
             "confirmed": self.confirmed,
             "confirmed_label": self.confirmed_label,
             "match_method": self.match_method,
+            "file_owner_point_id": self.file_owner_point_id,
+            "match_confidence": self.match_confidence,
         }
 
 
@@ -388,14 +405,14 @@ class ScanResultSummary:
 # ====================================================================
 
 
-def build_scan_results(
+def build_scan_results_with_artifacts(
     project_id: int,
     project_name: str,
     points: list[dict],
     scan_directory: str = "",
     db_path: str | None = None,
-) -> ScanResultSummary:
-    """从点位字典 + 文件扫描 + 历史确认生成统一扫描结果。
+) -> ScanBuildOutput:
+    """从点位字典 + 文件扫描 + 历史确认生成统一扫描结果，并返回扫描工件。
 
     本函数是扫描结果中心的入口——协调 scanner（文件扫描）、
     matcher（匹配引擎）、point_dictionary（标准点位字典）、
@@ -417,6 +434,9 @@ def build_scan_results(
     logger = setup_logger()
 
     start_time = time.perf_counter()
+    artifact_file_index = None
+    artifact_ownership = None
+    effective_scan_path = ""
 
     # ── v1.2.2：加载历史确认 ──
     history_map: dict[str, dict] = {}
@@ -505,7 +525,10 @@ def build_scan_results(
                 get_scanned_files_for_point,
                 get_file_counts_for_point,
             )
+            artifact_file_index = matched_project.file_index
+            effective_scan_path = getattr(matched_project.file_index, "root_path", "") or matched_project.path
             ownership = assign_ownership(matched_project.file_index, point_dict)
+            artifact_ownership = ownership
 
             # 构建 point_name → point_id 映射
             pname_to_pid: dict[str, int] = {}
@@ -540,6 +563,8 @@ def build_scan_results(
                     "cad_file_count": cad_count,
                     "budget_file_count": budget_count,
                     "is_multi_candidate": False,
+                    "file_owner_point_id": pid if files else None,
+                    "match_confidence": match_score,
                 }
 
             logger.info(
@@ -584,7 +609,7 @@ def build_scan_results(
         items=items,
         project_id=project_id,
         project_name=project_name,
-        scan_directory=project_root or scan_directory or str(TEST_ROOT_PATH) if 'TEST_ROOT_PATH' in dir() else "",
+        scan_directory=effective_scan_path or project_root or scan_directory or str(TEST_ROOT_PATH) if 'TEST_ROOT_PATH' in dir() else "",
         scan_duration_ms=elapsed_ms,
     )
 
@@ -594,7 +619,29 @@ def build_scan_results(
         summary.not_found_count, summary.cad_missing_count, summary.budget_missing_count,
         elapsed_ms,
     )
-    return summary
+    return ScanBuildOutput(
+        summary=summary,
+        file_index=artifact_file_index,
+        ownership=artifact_ownership,
+        scan_path=summary.scan_directory,
+    )
+
+
+def build_scan_results(
+    project_id: int,
+    project_name: str,
+    points: list[dict],
+    scan_directory: str = "",
+    db_path: str | None = None,
+) -> ScanResultSummary:
+    """兼容旧调用：仅返回 ScanResultSummary。"""
+    return build_scan_results_with_artifacts(
+        project_id=project_id,
+        project_name=project_name,
+        points=points,
+        scan_directory=scan_directory,
+        db_path=db_path,
+    ).summary
 
 
 def _collect_files(folder_node, result: list[str], prefix: str = "") -> None:

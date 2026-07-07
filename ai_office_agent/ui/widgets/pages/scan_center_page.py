@@ -49,7 +49,6 @@ from ....core.scan_result import (
     MatchStatus,
     ScanResultItem,
     ScanResultSummary,
-    build_scan_results,
 )
 from ....utils.logger import setup_logger
 from .base_page import BasePage
@@ -832,6 +831,7 @@ class ScanCenterPage(BasePage):
         self._project_id: int | None = None
         self._project_name: str = ""
         self._summary: ScanResultSummary | None = None
+        self._has_valid_session: bool = False
 
         self._setup_info_bar()
         self._setup_stat_cards()
@@ -987,6 +987,7 @@ class ScanCenterPage(BasePage):
         if row is None:
             logger.warning("扫描中心：项目 id=%s 不存在", project_id)
             self._project_id = None
+            self._has_valid_session = False
             self._clear_display()
             return False
 
@@ -1011,36 +1012,40 @@ class ScanCenterPage(BasePage):
         if row is None:
             logger.warning("扫描中心：项目 id=%s 不存在", project_id)
             self._project_id = None
+            self._has_valid_session = False
             self._clear_display()
             return False
 
         self._project_id = project_id
         self._project_name = row["project_name"] or f"项目 #{project_id}"
 
-        # v1.4：从 scan_result 表加载缓存
-        from ....core.scan_controller import load_scan_results_from_db
+        # v1.5.3：优先读取当前 Scan Session；无有效 session 时不自动扫描
+        from ....core.scan_controller import load_current_scan_session
 
         conn = Database.open_db_connection(self._config.database.path)
         try:
-            items = load_scan_results_from_db(conn, project_id)
+            session = load_current_scan_session(conn, project_id)
         finally:
             conn.close()
 
-        if items is not None:
-            from ....core.scan_result import ScanResultSummary
+        if session is not None:
+            items = _rebuild_items_from_dict(session.get("scan_result", {}))
             self._summary = ScanResultSummary.from_items(
                 items=items,
                 project_id=project_id,
                 project_name=self._project_name,
-                scan_directory="",
-                scan_duration_ms=0,
+                scan_directory=session.get("scan_path", ""),
+                scan_duration_ms=session.get("scan_duration_ms", 0),
             )
+            self._summary.scan_time = session.get("scan_time", self._summary.scan_time)
+            self._has_valid_session = True
             self._display_summary()
-            logger.info("扫描中心：从缓存加载项目 id=%s，%d 条结果", project_id, len(items))
+            logger.info("扫描中心：从 Scan Session 加载项目 id=%s，%d 条结果", project_id, len(items))
         else:
+            self._has_valid_session = False
             self._clear_display()
             self.project_name_label.setText(f"项目：{self._project_name}（尚未扫描）")
-            logger.info("扫描中心：项目 id=%s 无缓存结果", project_id)
+            logger.info("扫描中心：项目 id=%s 无有效 Scan Session", project_id)
 
         return True
 
@@ -1050,6 +1055,7 @@ class ScanCenterPage(BasePage):
         加载点位字典 + 执行文件扫描 + 生成结果 + 写入数据库。
         """
         if self._project_id is None:
+            self._has_valid_session = False
             self._clear_display()
             return
 
@@ -1063,6 +1069,7 @@ class ScanCenterPage(BasePage):
 
         if not points:
             logger.info("扫描中心：项目 id=%s 无点位数据", self._project_id)
+            self._has_valid_session = False
             self._clear_display()
             self.project_name_label.setText(f"项目：{self._project_name}（无点位数据）")
             return
@@ -1093,6 +1100,7 @@ class ScanCenterPage(BasePage):
             QMessageBox.critical(self, "扫描失败", f"扫描过程中发生错误：\n{exc}")
             return
 
+        self._has_valid_session = True
         self._display_summary()
 
     def _display_summary(self) -> None:
@@ -1124,6 +1132,7 @@ class ScanCenterPage(BasePage):
             "扫描中心渲染完成（v1.2.2）：总=%d 已匹配=%d 未找到=%d 已确认=%d",
             s.total_points, s.matched_count, s.not_found_count, s.confirmed_count,
         )
+        self._update_scan_button_text()
 
     def _clear_display(self) -> None:
         """清空全部显示。"""
@@ -1134,6 +1143,13 @@ class ScanCenterPage(BasePage):
         self.stat_cards.update_stats(ScanResultSummary())
         self.result_table.setRowCount(0)
         self.preview_panel.clear_detail()
+        self._summary = None
+        self._update_scan_button_text()
+
+    def _update_scan_button_text(self) -> None:
+        """根据当前 Scan Session 生命周期更新扫描按钮文案。"""
+        if hasattr(self, "scan_btn"):
+            self.scan_btn.setText("重新扫描" if self._has_valid_session else "执行扫描")
 
     # ------------------------------------------------------------------ 扫描操作
 
@@ -1419,10 +1435,12 @@ class ScanCenterPage(BasePage):
         try:
             from ....core import project_profile_repository as ppr
             from ....core.database import Database
+            from ....core.scan_controller import invalidate_scan_session
             conn = Database.open_db_connection(self._config.database.path)
             try:
                 ppr.init_project_profiles_table(conn)
                 ppr.set_project_folder(conn, self._project_id, folder)
+                invalidate_scan_session(conn, self._project_id)
             finally:
                 conn.close()
         except Exception as exc:
@@ -1430,48 +1448,66 @@ class ScanCenterPage(BasePage):
             return
 
         self.scan_dir_label.setText(f"目录：{folder}")
+        self._has_valid_session = False
+        self._summary = None
+        self.result_table.setRowCount(0)
+        self.preview_panel.clear_detail()
+        self._update_scan_button_text()
         QMessageBox.information(self, "已设置", f"项目文件夹：\n{folder}\n\n请点击「执行扫描」更新结果。")
 
     # ------------------------------------------------------------------ v1.3 文件整理
 
+    def _build_organize_plan_from_current_session(self):
+        """从当前 Scan Session 构建整理计划；不扫描、不重新归属。"""
+        if self._project_id is None or not self._has_valid_session or self._summary is None:
+            return None
+
+        from ....core.scan_controller import load_current_scan_session
+        from ....core.file_organizer import build_organize_plan_from_scan_session
+
+        conn = Database.open_db_connection(self._config.database.path)
+        try:
+            session = load_current_scan_session(conn, self._project_id)
+        finally:
+            conn.close()
+
+        if session is None:
+            self._has_valid_session = False
+            self._update_scan_button_text()
+            return None
+
+        points = [
+            {"id": item.point_id, "standard_point_name": item.standard_point_name}
+            for item in self._summary.items
+            if item.point_id is not None
+        ]
+        if not points:
+            return None
+
+        ownership = session.get("ownership", {})
+        point_files = ownership.get("point_files", {})
+        return build_organize_plan_from_scan_session(
+            point_files=point_files,
+            points=points,
+            project_path=session.get("scan_path", ""),
+        )
+
     def _on_organize_preview(self) -> None:
-        """Dry Run：生成文件整理预览（v1.5：使用唯一归属模型）。"""
-        if self._project_id is None or self._summary is None:
-            QMessageBox.warning(self, "提示", "请先执行扫描。")
+        """Dry Run：生成文件整理预览（读取当前 Scan Session）。"""
+        if self._project_id is None or self._summary is None or not self._has_valid_session:
+            QMessageBox.warning(self, "提示", "请先执行扫描")
             return
 
         try:
-            from ....core.file_organizer import build_organize_plan_from_ownership
-            from ....core.file_index import FileIndex
-            from ....core.scanner import TEST_ROOT_PATH
-            from pathlib import Path as P
-
-            # 构建 FileIndex
-            root = str(TEST_ROOT_PATH)
-            proj_dir = P(root) / self._project_name
-            if not proj_dir.exists():
-                QMessageBox.warning(self, "提示", f"项目目录不存在：{proj_dir}")
+            plan = self._build_organize_plan_from_current_session()
+            if plan is None:
+                QMessageBox.warning(self, "提示", "请先执行扫描")
                 return
-
-            file_index = FileIndex.build(proj_dir)
-
-            # v1.5：从 summary.items 提取点位字典，用唯一归属模型分组
-            points = [
-                {"id": item.point_id, "standard_point_name": item.standard_point_name}
-                for item in self._summary.items
-                if item.point_id is not None
-            ]
-            if not points:
-                QMessageBox.information(self, "提示", "未找到可整理的文件。")
-                return
-
-            plan = build_organize_plan_from_ownership(file_index, points, str(proj_dir))
 
             if plan.total_files == 0:
                 QMessageBox.information(self, "提示", "未找到可整理的文件。")
                 return
 
-            # 显示预览对话框
             self._show_organize_preview(plan)
 
         except Exception as exc:
@@ -1484,9 +1520,9 @@ class ScanCenterPage(BasePage):
         dialog.exec()
 
     def _on_organize_apply(self) -> None:
-        """执行整理（Apply Mode，v1.5：使用唯一归属模型）。"""
-        if self._project_id is None or self._summary is None:
-            QMessageBox.warning(self, "提示", "请先执行扫描。")
+        """执行整理（Apply Mode，读取当前 Scan Session）。"""
+        if self._project_id is None or self._summary is None or not self._has_valid_session:
+            QMessageBox.warning(self, "提示", "请先执行扫描")
             return
 
         reply = QMessageBox.warning(
@@ -1502,34 +1538,30 @@ class ScanCenterPage(BasePage):
             return
 
         try:
-            from ....core.file_organizer import (
-                build_organize_plan_from_ownership,
-                apply_organize_plan,
-            )
-            from ....core.file_index import FileIndex
-            from ....core.scanner import TEST_ROOT_PATH
-            from pathlib import Path as P
+            from ....core.file_organizer import apply_organize_plan
+            from ....core.scan_controller import invalidate_scan_session
 
-            root = str(TEST_ROOT_PATH)
-            proj_dir = P(root) / self._project_name
-            file_index = FileIndex.build(proj_dir)
+            plan = self._build_organize_plan_from_current_session()
+            if plan is None:
+                QMessageBox.warning(self, "提示", "请先执行扫描")
+                return
 
-            # v1.5：从 summary.items 提取点位字典，用唯一归属模型分组
-            points = [
-                {"id": item.point_id, "standard_point_name": item.standard_point_name}
-                for item in self._summary.items
-                if item.point_id is not None
-            ]
-
-            plan = build_organize_plan_from_ownership(file_index, points, str(proj_dir))
             result = apply_organize_plan(plan)
+            if result.get("moved", 0) > 0:
+                conn = Database.open_db_connection(self._config.database.path)
+                try:
+                    invalidate_scan_session(conn, self._project_id)
+                finally:
+                    conn.close()
+                self._has_valid_session = False
+                self._update_scan_button_text()
 
             QMessageBox.information(
                 self, "整理完成",
                 f"移动 {result['moved']} 个文件\n"
                 f"跳过 {result['skipped']} 个文件\n"
                 f"错误 {len(result['errors'])} 个\n\n"
-                f"建议执行扫描以更新状态。",
+                f"文件位置可能已变化，请点击「执行扫描」更新结果。",
             )
 
         except Exception as exc:

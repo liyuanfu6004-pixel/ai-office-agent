@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS scan_result (
 )
 """
 
+_SCAN_SESSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS scan_session (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL UNIQUE,
+    scan_path           TEXT    NOT NULL,
+    scan_time           TEXT    NOT NULL,
+    scan_duration_ms    INTEGER NOT NULL DEFAULT 0,
+    file_index_json     TEXT    NOT NULL,
+    ownership_json      TEXT    NOT NULL,
+    scan_result_json    TEXT    NOT NULL,
+    is_valid            INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT    NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+)
+"""
+
 _FILE_OWNERSHIP_SCHEMA = """
 CREATE TABLE IF NOT EXISTS file_ownership (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,6 +117,7 @@ def init_scan_result_tables(conn) -> None:
     import sqlite3
     conn.execute(_SCAN_RESULT_SCHEMA)
     conn.execute(_FILE_OWNERSHIP_SCHEMA)
+    conn.execute(_SCAN_SESSION_SCHEMA)
     # 索引
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scan_result_project "
@@ -118,8 +135,12 @@ def init_scan_result_tables(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_file_ownership_point "
         "ON file_ownership (project_id, point_id)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scan_session_project "
+        "ON scan_session (project_id, is_valid)"
+    )
     conn.commit()
-    logger.info("scan_result / file_ownership 表已就绪（v1.4）")
+    logger.info("scan_result / file_ownership / scan_session 表已就绪（v1.5.3）")
 
 
 def clear_scan_results(conn, project_id: int) -> int:
@@ -140,6 +161,175 @@ def clear_file_ownership(conn, project_id: int) -> int:
     deleted = cur.rowcount
     conn.commit()
     return deleted
+
+
+def _file_entry_to_dict(file_entry) -> dict:
+    """序列化 FileEntry。"""
+    return {
+        "file_name": file_entry.file_name,
+        "full_path": file_entry.full_path,
+        "extension": file_entry.extension,
+        "normalized_name": file_entry.normalized_name,
+        "parent_dir": file_entry.parent_dir,
+        "parent_path": file_entry.parent_path,
+    }
+
+
+def _dir_entry_to_dict(dir_entry) -> dict:
+    """序列化 DirEntry。"""
+    return {
+        "dir_name": dir_entry.dir_name,
+        "dir_path": dir_entry.dir_path,
+        "normalized_name": dir_entry.normalized_name,
+        "file_count": dir_entry.file_count,
+        "dwg_count": dir_entry.dwg_count,
+        "subdir_names": list(dir_entry.subdir_names),
+    }
+
+
+def _serialize_file_index(file_index) -> dict:
+    """序列化 FileIndex，供 Scan Session 复用。"""
+    if file_index is None:
+        return {"root_path": "", "files": [], "dirs": []}
+    return {
+        "root_path": file_index.root_path,
+        "files": [_file_entry_to_dict(f) for f in file_index.files],
+        "dirs": [_dir_entry_to_dict(d) for d in file_index.dirs],
+    }
+
+
+def _serialize_ownership(ownership) -> dict:
+    """序列化 OwnershipResult，保存一次扫描的唯一归属结果。"""
+    if ownership is None:
+        return {
+            "point_files": {},
+            "decisions": {},
+            "point_status": {},
+            "conflict_files": [],
+            "unassigned_files": [],
+        }
+    point_files = {
+        str(pid): [_file_entry_to_dict(f) for f in files]
+        for pid, files in ownership.point_files.items()
+    }
+    decisions = {}
+    for path, d in ownership.decisions.items():
+        decisions[path] = {
+            "file": _file_entry_to_dict(d.file),
+            "best_point_id": d.best_point_id,
+            "best_point_name": d.best_point_name,
+            "best_score": d.best_score,
+            "second_score": d.second_score,
+            "is_assigned": d.is_assigned,
+            "is_conflict": d.is_conflict,
+            "is_drawing": d.is_drawing,
+            "reason": d.reason,
+        }
+    return {
+        "point_files": point_files,
+        "decisions": decisions,
+        "point_status": {str(k): list(v) for k, v in ownership.point_status.items()},
+        "conflict_files": list(ownership.conflict_files),
+        "unassigned_files": list(ownership.unassigned_files),
+    }
+
+
+def clear_scan_session(conn, project_id: int) -> int:
+    """清空指定项目的 Scan Session。"""
+    cur = conn.execute("DELETE FROM scan_session WHERE project_id = ?", (project_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    return deleted
+
+
+def save_scan_session(
+    conn,
+    project_id: int,
+    scan_path: str,
+    summary,
+    file_index,
+    ownership,
+) -> int:
+    """保存当前项目 Scan Session。"""
+    scan_time = summary.scan_time or _now_iso()
+    created_at = _now_iso()
+    clear_scan_session(conn, project_id)
+    cur = conn.execute(
+        """
+        INSERT INTO scan_session
+            (project_id, scan_path, scan_time, scan_duration_ms,
+             file_index_json, ownership_json, scan_result_json, is_valid, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """,
+        (
+            project_id,
+            scan_path or summary.scan_directory or "",
+            scan_time,
+            summary.scan_duration_ms,
+            json.dumps(_serialize_file_index(file_index), ensure_ascii=False),
+            json.dumps(_serialize_ownership(ownership), ensure_ascii=False),
+            summary.to_json(),
+            created_at,
+        ),
+    )
+    conn.commit()
+    logger.info("scan_session 写入完成：项目 id=%s，session id=%s", project_id, cur.lastrowid)
+    return int(cur.lastrowid)
+
+
+def load_current_scan_session(conn, project_id: int) -> dict | None:
+    """读取当前有效 Scan Session；无有效缓存时返回 None。"""
+    cur = conn.execute(
+        """
+        SELECT * FROM scan_session
+        WHERE project_id = ? AND is_valid = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (project_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    try:
+        return {
+            "id": row["id"],
+            "project_id": row["project_id"],
+            "scan_path": row["scan_path"],
+            "scan_time": row["scan_time"],
+            "scan_duration_ms": row["scan_duration_ms"],
+            "file_index": json.loads(row["file_index_json"] or "{}"),
+            "ownership": json.loads(row["ownership_json"] or "{}"),
+            "scan_result": json.loads(row["scan_result_json"] or "{}"),
+            "is_valid": bool(row["is_valid"]),
+            "created_at": row["created_at"],
+        }
+    except json.JSONDecodeError as exc:
+        logger.warning("scan_session JSON 解析失败：项目 id=%s，%s", project_id, exc)
+        return None
+
+
+def has_valid_scan_session(conn, project_id: int, expected_scan_path: str | None = None) -> bool:
+    """判断项目是否存在有效 Scan Session。"""
+    session = load_current_scan_session(conn, project_id)
+    if session is None:
+        return False
+    if expected_scan_path:
+        try:
+            return Path(session["scan_path"]).resolve() == Path(expected_scan_path).resolve()
+        except OSError:
+            return session["scan_path"] == expected_scan_path
+    return True
+
+
+def invalidate_scan_session(conn, project_id: int) -> None:
+    """使当前项目 Scan Session 失效。"""
+    conn.execute(
+        "UPDATE scan_session SET is_valid = 0 WHERE project_id = ?",
+        (project_id,),
+    )
+    conn.commit()
+
 
 
 def save_scan_results(
@@ -388,7 +578,7 @@ class ScanController:
             ScanResultSummary.to_dict()。
         """
         import time
-        from .scan_result import build_scan_results, ScanResultSummary
+        from .scan_result import build_scan_results_with_artifacts
         from .database import Database
         from . import scan_match_history_repository as smhr
 
@@ -399,13 +589,14 @@ class ScanController:
         )
 
         # ── Step1-4：执行扫描 + 匹配 + 生成结果 ──
-        summary = build_scan_results(
+        build_output = build_scan_results_with_artifacts(
             project_id=project_id,
             project_name=project_name,
             points=points,
             scan_directory=scan_directory,
             db_path=db_path,
         )
+        summary = build_output.summary
 
         if db_path is None:
             logger.warning("db_path 为空，跳过数据库写入")
@@ -417,6 +608,7 @@ class ScanController:
             # 5a. 清空旧结果（可重入）
             clear_scan_results(conn, project_id)
             clear_file_ownership(conn, project_id)
+            clear_scan_session(conn, project_id)
 
             # 5b. 写入 scan_result
             save_scan_results(
@@ -428,7 +620,13 @@ class ScanController:
             ownership_records = _collect_ownership_from_items(summary.items)
             save_file_ownership_batch(conn, project_id, ownership_records)
 
-            # 5d. 更新 scan_match_history（已确认的点位）
+            # 5d. 保存当前 Scan Session（文件索引 + 唯一归属 + ScanResult）
+            save_scan_session(
+                conn, project_id, build_output.scan_path, summary,
+                build_output.file_index, build_output.ownership,
+            )
+
+            # 5e. 更新 scan_match_history（已确认的点位）
             _update_match_history_from_items(
                 conn, project_id, summary.items, smhr,
             )

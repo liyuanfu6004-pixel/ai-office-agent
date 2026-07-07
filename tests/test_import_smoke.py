@@ -22,9 +22,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import openpyxl  # noqa: E402
+import pytest  # noqa: E402
 
 from ai_office_agent.core import project_categories, projects_repository  # noqa: E402
 from ai_office_agent.data_import import excel_reader  # noqa: E402
+
+
+@pytest.fixture
+def tmp(tmp_path: Path) -> Path:
+    """兼容脚本模式的旧 tmp 参数名。"""
+    return tmp_path
 
 
 def make_sample_xlsx(path: Path) -> None:

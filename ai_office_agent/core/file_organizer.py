@@ -60,6 +60,22 @@ _BUDGET_KEYWORDS: tuple[str, ...] = (
 )
 
 
+def _is_budget_like_file(file: FileEntry, point_name: str = "") -> bool:
+    """判断预算类文件（含预算 PDF）。"""
+    import re as _re
+    match_name = for_matching(file.file_name)
+    for kw in _BUDGET_KEYWORDS:
+        if for_matching(kw) in match_name:
+            return True
+    if file.extension.lower() in _BUDGET_EXTS:
+        stem_norm = for_matching(Path(file.file_name).stem)
+        stem_no_digits = _re.sub(r"\d+", "", stem_norm).strip("-_ ")
+        point_norm = for_matching(point_name)
+        if stem_no_digits and stem_no_digits == point_norm:
+            return True
+    return False
+
+
 # ====================================================================
 # 分类结果
 # ====================================================================
@@ -238,33 +254,33 @@ def classify_file(
 # ====================================================================
 
 
+def _generic_dir_names() -> frozenset[str]:
+    return frozenset({
+        "图纸", "设计图", "施工图", "预算", "其他文件", "其他", "资料",
+        "other", "cad", "pdf", "dwg", "drawing", "drawings", "budget", "cost",
+    })
+
+
 def _drawing_belongs_to_point(file: FileEntry, point_name: str) -> bool:
-    """判断图纸文件是否真正属于该点位（v1.4.2）。
+    """判断图纸文件是否真正属于该点位（v1.5.3：仅 stem 匹配）。
 
-    问题背景：file_index.global_match_point 使用 fuzzy 匹配（score>=70），
-    相似点位名（如「盘龙-金辰街道」和「盘龙-联盟街道」）会互相包含对方的
-    图纸文件，导致一个点位下出现其他点位的图纸。
+    v1.5.3 修复：移除路径匹配规则，与 ownership._stem_match 保持一致。
+    旧规则"路径包含点位名"导致误整理后的文件被错误归属。
 
-    图纸归属强规则（满足任一即可）：
-    1. 文件完整路径（含目录）中包含点位名
-    2. 文件名 stem 以点位名开头（兼容「点位名202606121601.bak」这种带日期的命名）
-    3. 文件所在目录名包含点位名
+    新规则（仅 stem）：
+    1. 文件 stem 标准化后 == 点位名标准化后
+    2. 文件 stem 标准化后以点位名标准化后开头
     """
     norm_point = for_matching(point_name)
     if not norm_point:
         return False
 
-    norm_path = for_matching(file.full_path)
     norm_stem = for_matching(Path(file.file_name).stem)
-    norm_parent = for_matching(file.parent_dir)
 
-    if norm_point in norm_path:
+    if norm_stem == norm_point:
         return True
     if norm_stem.startswith(norm_point):
         return True
-    if norm_point in norm_parent:
-        return True
-
     return False
 
 
@@ -370,6 +386,51 @@ def build_organize_plan_from_ownership(
             point_files[pname] = files
 
     return build_organize_plan(point_files, project_path)
+
+
+def build_organize_plan_from_scan_session(
+    point_files: dict[str | int, list[dict | FileEntry]],
+    points: list[dict],
+    project_path: str,
+) -> OrganizePlan:
+    """v1.5.3：基于当前 Scan Session 的唯一归属结果生成整理计划。
+
+    本入口只消费已经保存的 ownership.point_files，不重新扫描、
+    不重新调用 assign_ownership，避免文件整理预览/执行造成重复扫描。
+    """
+    pid_to_pname: dict[int, str] = {}
+    for p in points:
+        if p.get("id") is None:
+            continue
+        pid_to_pname[int(p["id"])] = p.get("standard_point_name", "")
+
+    converted: dict[str, list[FileEntry]] = {}
+    for raw_pid, raw_files in point_files.items():
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError):
+            continue
+        pname = pid_to_pname.get(pid, "")
+        if not pname:
+            continue
+
+        files: list[FileEntry] = []
+        for raw_file in raw_files:
+            if isinstance(raw_file, FileEntry):
+                files.append(raw_file)
+            elif isinstance(raw_file, dict):
+                files.append(FileEntry(
+                    file_name=raw_file.get("file_name", ""),
+                    full_path=raw_file.get("full_path", ""),
+                    extension=raw_file.get("extension", ""),
+                    normalized_name=raw_file.get("normalized_name", ""),
+                    parent_dir=raw_file.get("parent_dir", ""),
+                    parent_path=raw_file.get("parent_path", ""),
+                ))
+        if files:
+            converted[pname] = files
+
+    return build_organize_plan(converted, project_path)
 
 
 # ====================================================================

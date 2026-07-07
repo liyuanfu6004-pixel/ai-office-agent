@@ -78,6 +78,24 @@ def test_scale_table_engine() -> None:
     assert records[0]["county"] == "val_0_区县"
     assert "长度" in records[0]["dynamic_data"]
 
+    # v1.5.4：重复任务名称去重 + 空字段补全
+    dup_rows = [
+        {"任务名称": "Site A", "区县": "", "长度": "", "芯数": "12"},
+        {"任务名称": " Site/A ", "区县": "五华区", "长度": "100", "芯数": "24"},
+        {"任务名称": "Site B", "区县": "盘龙区", "长度": "200", "芯数": "48"},
+    ]
+    dup_mapping = {"point_name": "任务名称", "county": "区县", "start_point": None, "end_point": None}
+    dup_dynamic = [{"name": "长度", "label": "长度"}, {"name": "芯数", "label": "芯数"}]
+    build_result = ste.build_point_records_with_stats(
+        dup_rows, dup_mapping, dup_dynamic, use_concatenation=False,
+    )
+    assert len(build_result.records) == 2
+    assert build_result.skipped_duplicates == 1
+    assert build_result.records[0]["standard_point_name"] == "Site A"
+    assert build_result.records[0]["county"] == "五华区"
+    assert build_result.records[0]["dynamic_data"]["长度"] == "100"
+    assert build_result.records[0]["dynamic_data"]["芯数"] == "12"
+
     # Preview
     preview = ste.build_preview_rows(
         rows, mapping, dynamic, use_concatenation=False, preview_count=3

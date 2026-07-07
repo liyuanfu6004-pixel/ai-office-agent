@@ -43,6 +43,7 @@ from ...core import project_profile_repository
 from ...core.database import Database
 from ...core.scale_table_engine import (
     build_field_candidates,
+    build_point_records_with_stats,
     build_preview_rows,
     classify_dynamic_fields,
     detect_best_sheet,
@@ -511,12 +512,20 @@ class ScaleTableWizard(QDialog):
                     QTableWidgetItem(str(item.get(df["name"], "")))
                 )
 
+        stats = build_point_records_with_stats(
+            all_rows, current_mapping, dyn_fields, self._use_concatenation,
+        )
+        duplicate_hint = (
+            f"　预计导入 {len(stats.records)} 个唯一点位，重复 {stats.skipped_duplicates} 行将跳过"
+            if stats.skipped_duplicates else "　导入时将按点位/任务名称自动去重"
+        )
         self._preview_info.setText(
             f"Sheet：{self._candidates[self._selected_sheet_idx]['sheet_name']}　"
             f"字段映射：{self._describe_mapping(current_mapping)}　"
             f"生成规则：{'起点+终点' if self._use_concatenation else '单字段'}　"
             f"动态字段：{len(dyn_fields)} 个　"
             f"预览前 {len(rows)} 条（共 {len(all_rows)} 条）"
+            f"{duplicate_hint}"
         )
 
         if preview_headers:

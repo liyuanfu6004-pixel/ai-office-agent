@@ -369,6 +369,134 @@ def test_budget_spreadsheet_no_keyword() -> None:
     print("[OK] 无关文件不归预算")
 
 
+def test_scattered_file_recognized_by_path_evidence() -> None:
+    """v1.5.5：文件在非标准子目录下也可通过文件名/路径证据归属。"""
+    point = "安宁-太平新城街道-分纤箱扩容点位"
+
+    files = [
+        _make_file_entry(
+            f"{point}预算.xlsx",
+            f"/proj/其他资料/{point}预算.xlsx",
+            ".xlsx",
+        ),
+        _make_file_entry(
+            f"{point}说明.docx",
+            f"/proj/其他文件/{point}说明.docx",
+            ".docx",
+        ),
+    ]
+    points = [{"id": 1, "standard_point_name": point}]
+
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+
+    for f in files:
+        d = result.decisions[f.full_path]
+        assert d.is_assigned, f"散落文件 {f.file_name} 应通过路径/文件名证据归属，实际 {d.reason}"
+
+    print("[OK] 散落文件可按文件名/路径证据唯一归属")
+
+
+def test_generic_directory_not_treated_as_point_evidence() -> None:
+    """泛分类目录名本身不作为点位身份证据。"""
+    point = "安宁-太平新城街道-分纤箱扩容点位"
+    files = [
+        _make_file_entry("图纸.dwg", "/proj/其他文件/图纸.dwg", ".dwg"),
+    ]
+    points = [{"id": 1, "standard_point_name": point}]
+
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+    d = result.decisions[files[0].full_path]
+    assert not d.is_assigned, "通用名图纸在泛分类目录下不应归属"
+
+    print("[OK] 泛分类目录不作为点位身份证据")
+
+
+def test_budget_pdf_can_be_assigned() -> None:
+    """v1.5.5：预算类 PDF 不被图纸严格规则一票否决。"""
+    point = "安宁-太平新城街道-分纤箱扩容点位"
+    files = [
+        _make_file_entry(
+            f"{point}-设计预算.pdf",
+            f"/proj/资料包/{point}-设计预算.pdf",
+            ".pdf",
+        ),
+    ]
+    points = [{"id": 1, "standard_point_name": point}]
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+    d = result.decisions[files[0].full_path]
+    assert d.is_assigned, f"预算 PDF 应可归属，实际 {d.reason}"
+
+    print("[OK] 预算 PDF 可按预算资料归属")
+
+
+def test_drawing_stem_match_not_path() -> None:
+    """v1.5.3：图纸归属仅看 stem，不看路径。
+
+    场景：文件 stem 匹配点位A，但物理路径在点位B目录下（误整理导致）。
+    旧规则"路径包含点位名"会导致：
+    1. 文件同时匹配A(stem)和B(path) → 冲突 → 不归属
+    2. 其他点位文件在A目录下 → 错误归属到A
+
+    新规则：仅 stem 匹配，路径不影响图纸归属。
+    """
+    point_a = "安宁-县街街道-分纤箱扩容点位"
+    point_b = "安宁-太平新城街道-分纤箱扩容点位"
+
+    files = [
+        # point_a 的图纸，但物理在 point_b 目录下（误整理导致）
+        _make_file_entry(
+            f"{point_a}.dwg",
+            f"/proj/{point_b}/图纸/{point_a}.dwg",
+            ".dwg",
+        ),
+        # point_b 的图纸，在 point_b 目录下
+        _make_file_entry(
+            f"{point_b}.dwg",
+            f"/proj/{point_b}/图纸/{point_b}.dwg",
+            ".dwg",
+        ),
+        # 其他点位的文件，误放在 point_a 目录下
+        _make_file_entry(
+            "五华-丰宁街道-分纤箱扩容点位.dwg",
+            f"/proj/{point_a}/图纸/五华-丰宁街道-分纤箱扩容点位.dwg",
+            ".dwg",
+        ),
+    ]
+    points = [
+        {"id": 1, "standard_point_name": point_a},
+        {"id": 2, "standard_point_name": point_b},
+        {"id": 3, "standard_point_name": "五华-丰宁街道-分纤箱扩容点位"},
+    ]
+
+    idx = _build_index(files)
+    result = assign_ownership(idx, points)
+
+    # point_a 的图纸（即使在 point_b 目录下）→ 归属 point_a
+    d1 = result.decisions[files[0].full_path]
+    assert d1.is_assigned and d1.best_point_id == 1, \
+        f"stem 匹配 point_a 应归属 point_a，实际 {d1.best_point_id}（{d1.reason}）"
+
+    # point_b 的图纸 → 归属 point_b
+    d2 = result.decisions[files[1].full_path]
+    assert d2.is_assigned and d2.best_point_id == 2, \
+        f"stem 匹配 point_b 应归属 point_b，实际 {d2.best_point_id}"
+
+    # 五华-丰宁街道的图纸（在 point_a 目录下）→ 归属五华（stem匹配），不归 point_a
+    d3 = result.decisions[files[2].full_path]
+    assert d3.is_assigned and d3.best_point_id == 3, \
+        f"stem 匹配五华应归属五华，实际 {d3.best_point_id}（{d3.reason}）"
+
+    # 验证 point_a 下不会出现五华的文件
+    files_a = [f.file_name for f in result.point_files.get(1, [])]
+    assert "五华-丰宁街道-分纤箱扩容点位.dwg" not in files_a, \
+        "五华文件不应出现在 point_a 下"
+
+    print("[OK] v1.5.3 图纸仅 stem 匹配，路径不影响归属")
+
+
 def main() -> int:
     test_drawing_exts_constant()
     test_single_ownership_one_file_one_owner()
@@ -381,6 +509,10 @@ def main() -> int:
     test_organize_plan_from_ownership()
     test_budget_keyword_any_extension()
     test_budget_spreadsheet_no_keyword()
+    test_scattered_file_recognized_by_path_evidence()
+    test_generic_directory_not_treated_as_point_evidence()
+    test_budget_pdf_can_be_assigned()
+    test_drawing_stem_match_not_path()
     print("\nV1.5_OWNERSHIP_OK")
     return 0
 

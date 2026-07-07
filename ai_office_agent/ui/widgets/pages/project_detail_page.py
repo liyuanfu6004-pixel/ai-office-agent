@@ -648,62 +648,12 @@ class ProjectDetailPage(BasePage):
     def _try_match_from_sandbox(
         self, project_name: str, points: list[dict]
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """v1.5：使用 ownership 唯一归属模型匹配，不依赖目录结构假设。
+        """遗留兼容方法：点位详情禁止触发扫描，始终返回空状态映射。
 
-        Returns:
-            (drawing_status_map, budget_status_map): 键为 standard_point_name。
+        v1.5.3 起，点位详情只读取 scan_result / Scan Session 缓存。
         """
-        drawing_map: dict[str, str] = {}
-        budget_map: dict[str, str] = {}
-
-        try:
-            from ....core.scanner import TEST_ROOT_PATH, scan_with_file_index
-            from ....core.matcher import match_folder
-            from ....core.ownership import assign_ownership
-
-            projects = scan_with_file_index(str(TEST_ROOT_PATH))
-
-            matched_project = None
-            for proj in projects:
-                result = match_folder(project_name, proj.name)
-                if result.is_match:
-                    matched_project = proj
-                    break
-
-            if matched_project is None or matched_project.file_index is None:
-                logger.debug("沙盒中未找到匹配的项目文件夹：%s", project_name)
-                return drawing_map, budget_map
-
-            logger.info(
-                "v1.5 沙盒匹配到项目：%s（FileIndex: %d 文件, %d 目录）",
-                matched_project.path,
-                len(matched_project.file_index.files),
-                len(matched_project.file_index.dirs),
-            )
-
-            point_dict = [
-                {"id": p["id"], "standard_point_name": p["standard_point_name"],
-                 "county": p.get("county", "")}
-                for p in points
-            ]
-            ownership = assign_ownership(matched_project.file_index, point_dict)
-
-            for p in point_dict:
-                pid = int(p["id"])
-                pname = p["standard_point_name"]
-                cad_status, budget_status = ownership.status_for_point(pid)
-                drawing_map[pname] = cad_status
-                budget_map[pname] = budget_status
-
-            logger.info(
-                "v1.5 沙盒状态计算完成：%d 个点位有图纸状态，%d 个有预算状态",
-                len(drawing_map), len(budget_map),
-            )
-
-        except Exception as exc:
-            logger.debug("v1.5 ownership 扫描失败，使用默认状态：%s", exc)
-
-        return drawing_map, budget_map
+        logger.debug("跳过遗留沙盒扫描：%s（%d 点位）", project_name, len(points))
+        return {}, {}
 
     def _render_overview(self, row) -> None:
         """把单行项目记录填入概览表单（只读）。
@@ -921,7 +871,7 @@ class ProjectDetailPage(BasePage):
             pass
 
     @Slot(int, int)
-    def _on_import_succeeded(self, inserted: int, _skipped: int) -> None:
+    def _on_import_succeeded(self, inserted: int, skipped: int) -> None:
         """导入成功槽（主线程执行）。"""
         self._import_inserted = inserted
         try:
@@ -937,11 +887,11 @@ class ProjectDetailPage(BasePage):
             QMessageBox.warning(self, "警告", f"导入完成但刷新失败：{exc}")
             self._request_thread_quit()
             return
-        QMessageBox.information(
-            self, "导入完成",
-            f"已导入 {inserted} 条点位到点位字典。\n"
-            f"（字段配置已保存，下次导入同项目将自动使用）",
-        )
+        lines = [f"已导入 {inserted} 条点位到点位字典。"]
+        if skipped:
+            lines.append(f"已跳过 {skipped} 条重复点位/任务名称。")
+        lines.append("（字段配置已保存，下次导入同项目将自动使用）")
+        QMessageBox.information(self, "导入完成", "\n".join(lines))
         self._request_thread_quit()
 
     @Slot(str)

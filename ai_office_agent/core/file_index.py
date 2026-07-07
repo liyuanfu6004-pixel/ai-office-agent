@@ -134,14 +134,13 @@ class FileIndex:
                 for entry in entries:
                     results.append((result.score, entry))
 
-        # v1.4.2 修复：目录匹配改为精确匹配。
-        # 旧逻辑用 fuzzy（score≥70）匹配目录名，然后 parent_path.startswith
-        # 把整个目录树的所有文件都归入该点位，导致跨点位严重污染。
-        #
-        # 新逻辑：目录标准化名 == 点位标准化名 → 该目录下**直接文件**
-        # 才归属（不含子目录下的文件，子目录属于子点位）。
+        # 目录匹配：目录名精确相等时，把该目录下直接文件归入该点位。
+        # 同时兼容目录名用下划线/空格分隔的常见写法（Site_A ↔ Site A），
+        # 但仍不启用 fuzzy，以避免跨点位污染。
+        compact_match_name = match_name.replace(" ", "").replace("_", "")
         for de in self.dirs:
-            if de.normalized_name != match_name:
+            compact_dir_name = de.normalized_name.replace(" ", "").replace("_", "")
+            if de.normalized_name != match_name and compact_dir_name != compact_match_name:
                 continue
             for fe in self.files:
                 if fe.parent_path == de.dir_path:

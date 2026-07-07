@@ -2,6 +2,110 @@
 
 > 按版本倒序记录。每个开发任务完成后追加一条。
 
+## [v1.5.5] - 2026-07-07 — 散落文件识别与整理闭环
+
+### 问题
+
+扫描结果中很多点位显示「未找到」，建议写着「未在文件系统中找到对应文件夹；请创建点位文件夹并导入图纸」。但实际文件已经在用户选择的项目文件夹下，只是现有子文件夹名称不是标准点位名称。用户希望系统遍历选择目录下所有文件，识别归属，再通过整理按钮创建标准点位文件夹并分类移动文件。
+
+### 修复
+
+- `ownership` 归属证据扩展为文件名、父目录、全部祖先目录片段、项目相对路径文本。
+- 泛分类目录（图纸/预算/其他文件/other/cad/pdf/资料 等）不再作为点位身份证据，避免误归属。
+- 图纸类文件仍走严格证据，保持唯一归属，禁止 fuzzy，避免跨点位图纸污染回归。
+- 预算类 PDF 不再被图纸严格规则一票否决，可按预算资料参与归属并最终分类为预算。
+- `NOT_FOUND` 建议文案改为「已扫描项目文件夹，但未识别到该点位的归属文件；请检查文件名或路径是否包含点位信息，或后续人工确认」，不再误导用户创建文件夹。
+- 有归属文件时建议提示可执行整理创建标准点位文件夹并分类。
+- 文件整理预览/执行继续读取 Scan Session 中的归属结果，目标目录使用 `scan_path`，不重新扫描、不重新归属，保持与扫描结果一致。
+
+### 修改文件
+
+- `core/ownership.py`
+- `core/scan_result.py`
+- `core/file_organizer.py`
+- `tests/test_v1_5_ownership.py`
+- `tests/test_scan_session.py`
+
+### 验证
+
+- `python -m pytest`：45/45 全部通过
+- 完整冒烟链路全部通过：
+  - `test_import_smoke.py` → ALL_SMOKE_OK
+  - `test_gui_smoke.py` → GUI_SMOKE_OK
+  - `test_import_e2e.py` → E2E_OK
+  - `test_v1_1_smoke.py` → v1.1.0_SMOKE_OK
+  - `test_v1_2_3_smoke.py` → V1.2.3_SMOKE_OK
+  - `test_v1_3_smoke.py` → V1.3_SMOKE_OK
+  - `test_v1_5_ownership.py` → V1.5_OWNERSHIP_OK
+  - `test_scan_session.py` → 4/4 通过
+
+## [v1.5.4] - 2026-07-07 — 点位明细导入重复任务名称去重
+
+### 问题
+
+用户导入 `出版明细-社区2025-3个项目-融基编号V2(1)(2).xlsx` 时，F 列「任务名称」存在大量重复值。旧逻辑逐行生成 `point_dictionary` 记录，导致同一个任务名称被重复导入为多个点位。
+
+### 修复
+
+- `build_point_records` 内部按标准化后的点位/任务名称自动去重。
+- 新增 `build_point_records_with_stats`，返回唯一记录数、重复跳过数和重复名称列表。
+- 重复行不新增点位，但会补充首条记录中为空的区县和动态字段。
+- `ScaleImportWorker` 导入时显示唯一点位数和重复跳过数。
+- 导入完成对话框显示「已跳过 X 条重复点位/任务名称」。
+- 预览阶段提示导入时会按点位/任务名称自动去重。
+
+### 修改文件
+
+- `core/scale_table_engine.py`
+- `data_import/scale_import_worker.py`
+- `ui/widgets/pages/project_detail_page.py`
+- `ui/widgets/scale_table_wizard.py`
+- `tests/test_v1_1_smoke.py`
+
+### 验证
+
+- `python -m pytest tests/test_v1_1_smoke.py`：3/3 通过
+
+## [v1.5.3] - 2026-07-07 — 扫描结果生命周期管理修复
+
+### 问题
+
+点击「执行扫描」完成后，进入「文件整理预览」仍会重新 `FileIndex.build(...)` 并重新执行 ownership 归属，导致用户等待两次、扫描结果可能不一致、浪费扫描时间。
+
+### 修复
+
+- 新增当前项目 Scan Session：一次扫描完成后保存 `project_id`、`scan_path`、`scan_time`、文件索引、唯一归属结果和 ScanResult。
+- `ScanController.run_scan()` 改为持久化完整扫描工件，仍是唯一显式扫描入口。
+- 文件整理预览 / 执行改为读取当前 Scan Session，不再调用 `FileIndex.build`、scanner 或 `assign_ownership`。
+- 无有效 Scan Session 时，文件整理预览 / 执行提示「请先执行扫描」，禁止自动扫描。
+- 扫描按钮生命周期调整：初次显示「执行扫描」，有效 Scan Session 存在时显示「重新扫描」。
+- 修改扫描目录时使 Scan Session 失效，等待用户主动重新扫描。
+- 点位详情遗留沙盒扫描函数改为不触发扫描，详情继续只读缓存结果。
+- 保持 v1.5 唯一归属模型：唯一归属只在用户主动扫描时计算。
+
+### 修改文件
+
+- `core/scan_controller.py`
+- `core/scan_result.py`
+- `core/file_organizer.py`
+- `ui/widgets/pages/scan_center_page.py`
+- `ui/widgets/pages/project_detail_page.py`
+- `tests/test_scan_session.py`
+- `tests/test_gui_smoke.py`
+
+### 验证
+
+- `python -m pytest`：40/40 全部通过
+- 完整冒烟链路全部通过：
+  - `test_import_smoke.py` → ALL_SMOKE_OK
+  - `test_gui_smoke.py` → GUI_SMOKE_OK
+  - `test_import_e2e.py` → E2E_OK
+  - `test_v1_1_smoke.py` → v1.1.0_SMOKE_OK
+  - `test_v1_2_3_smoke.py` → V1.2.3_SMOKE_OK
+  - `test_v1_3_smoke.py` → V1.3_SMOKE_OK
+  - `test_v1_5_ownership.py` → V1.5_OWNERSHIP_OK
+  - `test_scan_session.py` → 2/2 通过
+
 ## [v1.5.1] - 2026-07-07 — 预算识别规则修复
 
 ### 问题

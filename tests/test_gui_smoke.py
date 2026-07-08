@@ -160,12 +160,10 @@ def main() -> int:
         assert hasattr(scan_page, "load_project"), "扫描中心应有 load_project 方法"
         # v1.2.2：新增按钮
         assert hasattr(scan_page, "confirm_all_btn"), "v1.2.2 应有全部确认按钮"
-        assert hasattr(scan_page, "batch_confirm_btn"), "v1.2.2 应有批量确认按钮"
-        assert hasattr(scan_page, "rematch_btn"), "v1.2.2 应有重新匹配按钮"
         assert hasattr(scan_page, "export_btn"), "v1.2.2 应有导出Excel按钮"
         assert hasattr(scan_page, "select_folder_btn"), "v1.3.1 应有选择项目文件夹按钮"
-        # v1.2.2：结果表格应有 8 列（含确认）
-        assert scan_page.result_table.columnCount() >= 8, "v1.2.2 结果表格应 >= 8 列"
+        # v1.5.7：结果表格 7 列（移除确认列）
+        assert scan_page.result_table.columnCount() >= 7, "v1.5.7 结果表格应 >= 7 列"
 
         # 预留接口验证（仅定义，不实现）
         from ai_office_agent.ui.widgets.pages.scan_center_page import (

@@ -635,12 +635,19 @@ def match_points_from_index(
             # 取第一个归属文件的父目录作为 folder_name
             folder_name = files[0].parent_dir
             folder_path = files[0].parent_path
+            # 取所有归属文件的最高置信度作为 match_score
+            assigned_scores = [
+                ownership.decisions[f.full_path].best_score
+                for f in files
+                if f.full_path in ownership.decisions
+            ]
+            match_score = round(max(assigned_scores), 2) if assigned_scores else 1.0
             matches.append(MatchResult(
                 folder_name=folder_name,
                 folder_path=folder_path,
                 point_id=pid,
                 point_name=pname,
-                match_score=1.0,
+                match_score=match_score,
                 drawing_status=cad_status,
                 budget_status=budget_status,
             ))

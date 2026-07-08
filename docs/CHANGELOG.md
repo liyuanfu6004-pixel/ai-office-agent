@@ -2,6 +2,65 @@
 
 > 按版本倒序记录。每个开发任务完成后追加一条。
 
+## [v1.5.8] - 2026-07-09 — 归属识别优化
+
+### 匹配率精细化
+
+- 匹配率不再是 0%/100% 二值，改用 `OwnershipDecision.best_score` 作为真实置信度。
+- 修改文件：`core/scan_result.py`、`core/scanner.py`。
+
+### 图纸 stem 匹配放宽
+
+- `_stem_match` 新增包含匹配：点位名包含在 stem 中即可匹配（兼容文件含编号前缀如 `01-昆明湖中坝...dwg`）。
+- 修改文件：`core/ownership.py`。
+
+### 预算 stem 匹配放宽
+
+- `_stem_matches_point` 新增原始 stem 包含点位名检查，解决去数字后失配问题。
+- 修改文件：`core/ownership.py`。
+
+### 路径证据加强验证
+
+- Tier 2 路径证据新增 stem 关联性验证：`match_strings(stem, pname) >= 65` 才给 0.85。
+- 防止「五华-红云街道」的文件在「安宁-太平新城街道」目录下被误归属。
+- 修改文件：`core/ownership.py`。
+
+### 统计卡片移除已确认
+
+- 移除统计卡片行的「已确认」卡片，与删除确认列一致。
+- 修改文件：`ai_office_agent/ui/widgets/pages/scan_center_page.py`。
+
+### 修改文件
+
+- `ai_office_agent/core/ownership.py`
+- `ai_office_agent/core/scan_result.py`
+- `ai_office_agent/core/scanner.py`
+- `ai_office_agent/ui/widgets/pages/scan_center_page.py`
+
+## [v1.5.7] - 2026-07-09 — 扫描中心 UI 简化
+
+### 移除人工确认列
+
+- 扫描中心结果表格从 8 列精简为 7 列，删除最右侧的「确认」列。
+- 删除 `ScanResultTable` 的 `confirm_toggled` 信号与行内确认按钮。
+- 表格列头：`状态 / 标准点位 / 实际文件夹 / 匹配率 / CAD / 预算 / 建议`。
+
+### 移除冗余操作按钮
+
+- 删除「批量确认已匹配」按钮（`batch_confirm_btn`）与对应 `_on_batch_confirm_matched` 方法。
+- 删除「重新匹配」按钮（`rematch_btn`）及 `RematchDialog` 对话框、对应 `_on_rematch` 方法。
+- 保留「执行扫描 / 全部确认 / 导出 Excel / 选择项目文件夹 / 整理文件」按钮。
+
+### 代码清理
+
+- 移除未使用的 `QDialogButtonBox` 导入。
+- 移除未使用的 `time` 导入。
+
+### 修改文件
+
+- `ai_office_agent/ui/widgets/pages/scan_center_page.py`
+- `tests/test_gui_smoke.py` — 同步移除已删除按钮和确认列的断言，列数检查改为 7
+
 ## [v1.5.6] - 2026-07-08 — 预算识别修复与 UI 优化
 
 ### 预算识别修复

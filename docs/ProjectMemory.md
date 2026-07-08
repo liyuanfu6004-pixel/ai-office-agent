@@ -37,9 +37,25 @@
 
 ## 5. 当前版本
 
-**v1.5.6**
+**v1.5.8**
 
 ## 6. 当前开发阶段
+
+**v1.5.8 归属识别优化 — 开发完成** ✅
+
+- 匹配率从 0%/100% 改为真实置信度（基于 `OwnershipDecision.best_score`）。
+- `_stem_match` 新增包含匹配（兼容文件含编号前缀）。
+- `_stem_matches_point` 新增原始 stem 包含点位名检查。
+- Tier 2 路径证据新增 stem 关联性验证（threshold 65），防止跨点位文件误归属。
+- 统计卡片行移除「已确认」卡片。
+
+### v1.5.8 修改模块
+
+- `ai_office_agent/core/ownership.py`
+- `ai_office_agent/core/scan_result.py`
+- `ai_office_agent/core/scanner.py`
+- `ai_office_agent/ui/widgets/pages/scan_center_page.py`
+- `tests/test_gui_smoke.py`
 
 **v1.5.6 预算识别修复与 UI 优化 — 开发完成** ✅
 

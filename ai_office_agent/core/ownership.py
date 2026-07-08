@@ -156,14 +156,20 @@ def _is_budget_like_file(file: FileEntry, point_name: str = "") -> bool:
     return False
 
 
-def _stem_matches_point(stem_no_digits: str, point_norm: str) -> bool:
-    """检查去数字后的 stem 是否匹配点位名（精确 或 前缀）。"""
+def _stem_matches_point(stem_no_digits: str, point_norm: str, stem_raw: str = "") -> bool:
+    """检查去数字后的 stem 是否匹配点位名（精确 / 前缀 / 包含）。
+
+    v1.5.7：增加原始 stem 包含点位名的检查，解决去数字后失配问题。
+    """
     if not stem_no_digits or len(stem_no_digits) < 2:
         return False
     if stem_no_digits == point_norm:
         return True
     # 点位名以 stem 开头（如文件"安宁-县街街道.xlsx"匹配点位"安宁-县街街道-扩容"）
     if point_norm.startswith(stem_no_digits + "-"):
+        return True
+    # v1.5.7：原始 stem 包含完整点位名（如"昆明湖中坝5号地块瑞园五GJ001预算"）
+    if stem_raw and len(point_norm) >= 4 and point_norm in stem_raw:
         return True
     return False
 
@@ -184,9 +190,10 @@ def _stem_match(file: FileEntry, point_name: str) -> bool:
     新规则（仅 stem）：
     1. 文件 stem 标准化后 == 点位名标准化后
     2. 文件 stem 标准化后以点位名标准化后开头（兼容带时间戳后缀的文件名）
+    3. 点位名包含在 stem 中（兼容文件含编号前缀，如"01-昆明湖中坝...dwg"）
     """
     norm_point = for_matching(point_name)
-    if not norm_point:
+    if not norm_point or len(norm_point) < 2:
         return False
 
     norm_stem = for_matching(Path(file.file_name).stem)
@@ -194,6 +201,9 @@ def _stem_match(file: FileEntry, point_name: str) -> bool:
     if norm_stem == norm_point:
         return True
     if norm_stem.startswith(norm_point):
+        return True
+    # v1.5.7：点位名包含在 stem 中（文件含编号前缀等）
+    if norm_point in norm_stem:
         return True
     return False
 
@@ -279,12 +289,23 @@ def _score_file_to_point(
 
     best = 0.0
 
-    # ── Tier 2: 路径含完整点位名 ──
+    # ── Tier 2: 路径含完整点位名（需 stem 有一定关联）──
+    # v1.5.7 修复：单纯路径证据不够，要求 stem 与点位名至少 60% 相似。
+    # 否则像「五华-红云街道-分纤箱扩容点位.xlsx」放在「安宁-太平新城街道」目录下
+    # 会被误归属到安宁点位。
     for cand in path_candidates:
         if not cand:
             continue
         if len(norm_pname) >= 4 and norm_pname in cand:
-            best = max(best, 0.85)
+            if stem:
+                stem_rel = match_strings(stem, pname).score
+                if stem_rel >= 65:
+                    best = max(best, 0.85)
+                else:
+                    # stem 不相关 → 路径证据不充分（降权至 < 阈值 0.75）
+                    best = max(best, 0.65)
+            else:
+                best = max(best, 0.85)
 
     # ── Tier 3: 全名模糊匹配（封顶 0.88，确保低于 Tier1 的 0.95）──
     # 封顶 0.88 而非 0.90：避免浮点精度导致 0.95-0.90=0.0499...<0.05 误判冲突
@@ -421,7 +442,7 @@ def _is_budget_file(file: FileEntry, point_name: str) -> bool:
         stem = for_matching(Path(file.file_name).stem)
         stem_no_digits = _re.sub(r"\d+", "", stem).strip("-_ ")
         point_norm = for_matching(point_name)
-        if _stem_matches_point(stem_no_digits, point_norm):
+        if _stem_matches_point(stem_no_digits, point_norm, stem):
             return True
 
     return False

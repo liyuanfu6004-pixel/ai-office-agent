@@ -550,8 +550,16 @@ def build_scan_results_with_artifacts(
                     folder_name = files[0].parent_dir
                     folder_path = files[0].parent_path
 
-                # 匹配分数：有归属文件 → 1.0；否则 0
-                match_score = 1.0 if files else 0.0
+                # 匹配分数：取所有归属文件的最高置信度
+                if files:
+                    assigned_scores = [
+                        ownership.decisions[f.full_path].best_score
+                        for f in files
+                        if f.full_path in ownership.decisions
+                    ]
+                    match_score = round(max(assigned_scores), 2) if assigned_scores else 1.0
+                else:
+                    match_score = 0.0
 
                 match_map[pname] = {
                     "folder_name": folder_name,

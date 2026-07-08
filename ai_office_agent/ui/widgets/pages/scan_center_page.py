@@ -1,18 +1,9 @@
-"""扫描结果中心页面 — v1.2.2 升级（人工确认 + 重新匹配 + 学习机制 + 批量确认 + 导出）。
+"""扫描中心页面。
 
-扫描结果中心是点位匹配与文件状态分析的核心视图。
-
-v1.2.2 新增：
-    - 人工确认：结果列表增加"确认"按钮列，状态切换"未确认"/"已确认"
-    - 重新匹配：NOT_FOUND / MULTIPLE_MATCH / PARTIAL_MATCH 可重新选择目录
-    - 学习机制：确认结果保存到 scan_match_history 表，下次扫描优先使用
-    - 批量确认：全部确认 / 批量确认已匹配项
-    - 导出 Excel：含标准点位/实际目录/CAD状态/预算状态/匹配率/建议/确认状态
-    - 约束：所有操作仅修改扫描结果和确认历史，禁止修改文件/目录
+点位匹配与文件状态分析的核心视图。
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, Signal, QTimer
@@ -21,7 +12,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -275,7 +265,7 @@ class StatCard(QFrame):
 
 
 class StatCardRow(QWidget):
-    """统计卡片行：总点位/已匹配/部分匹配/未匹配/CAD缺失/预算缺失/已确认（v1.2.2）。"""
+    """统计卡片行：总点位/已匹配/部分匹配/未匹配/CAD缺失/预算缺失。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -289,7 +279,6 @@ class StatCardRow(QWidget):
         self.not_found_card = StatCard("未匹配")
         self.cad_missing_card = StatCard("CAD 缺失")
         self.budget_missing_card = StatCard("预算缺失")
-        self.confirmed_card = StatCard("已确认")
 
         layout.addWidget(self.total_card)
         layout.addWidget(self.matched_card)
@@ -297,7 +286,6 @@ class StatCardRow(QWidget):
         layout.addWidget(self.not_found_card)
         layout.addWidget(self.cad_missing_card)
         layout.addWidget(self.budget_missing_card)
-        layout.addWidget(self.confirmed_card)
 
         # 颜色标注
         self.matched_card.value_label.setStyleSheet(
@@ -315,26 +303,22 @@ class StatCardRow(QWidget):
         self.budget_missing_card.value_label.setStyleSheet(
             "font-size: 28px; font-weight: 700; color: #E74856; background: transparent;"
         )
-        self.confirmed_card.value_label.setStyleSheet(
-            "font-size: 28px; font-weight: 700; color: #0067C0; background: transparent;"
-        )
 
     def update_stats(self, summary: ScanResultSummary) -> None:
-        """根据汇总更新全部卡片（v1.2.2 含已确认）。"""
+        """根据汇总更新全部卡片。"""
         self.total_card.set_value(summary.total_points)
         self.matched_card.set_value(summary.matched_count)
         self.partial_card.set_value(summary.partial_match_count)
         self.not_found_card.set_value(summary.not_found_count)
         self.cad_missing_card.set_value(summary.cad_missing_count)
         self.budget_missing_card.set_value(summary.budget_missing_count)
-        self.confirmed_card.set_value(summary.confirmed_count)
 
 
 # ====================================================================
 # 结果列表表格
 # ====================================================================
 
-# 固定列定义（v1.2.2 增加"确认"列）
+# 固定列定义
 _SCAN_COLUMNS: list[tuple[str, int]] = [
     ("状态", 80),
     ("标准点位", 200),
@@ -343,7 +327,6 @@ _SCAN_COLUMNS: list[tuple[str, int]] = [
     ("CAD", 56),
     ("预算", 56),
     ("建议", 220),
-    ("确认", 60),
 ]
 
 # 列索引常量
@@ -354,21 +337,18 @@ _COL_SCORE = 3
 _COL_CAD = 4
 _COL_BUDGET = 5
 _COL_SUGGESTION = 6
-_COL_CONFIRM = 7
 
 
 class ScanResultTable(QTableWidget):
-    """扫描结果列表表格（v1.2.2 升级：增加确认按钮列）。
+    """扫描结果列表表格。
 
-    固定 8 列：状态/标准点位/实际文件夹/匹配率/CAD/预算/建议/确认。
+    固定 7 列：状态/标准点位/实际文件夹/匹配率/CAD/预算/建议。
     支持排序、筛选、搜索。
     禁止修改数据。
     """
 
     # 双击结果行时发出，携带 ScanResultItem
     item_selected = Signal(object)
-    # 确认状态切换时发出，携带 (row_index, ScanResultItem)
-    confirm_toggled = Signal(int, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -388,16 +368,15 @@ class ScanResultTable(QTableWidget):
         header = self.horizontalHeader()
         header.setSectionsClickable(True)
 
-        # 设置列（最后列固定宽度，不拉伸）
+        # 设置列（最后列可拉伸）
         titles = [c[0] for c in _SCAN_COLUMNS]
         self.setColumnCount(len(titles))
         self.setHorizontalHeaderLabels(titles)
         for col, w in enumerate(_SCAN_COLUMNS):
             self.setColumnWidth(col, w[1])
-        # v1.4.1 修复：建议列改为可交互调整，允许拖动列宽；确认列固定
-        header.setStretchLastSection(False)
+        # v1.4.1：建议列改为可交互调整，允许拖动列宽
+        header.setStretchLastSection(True)
         header.setSectionResizeMode(_COL_SUGGESTION, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(_COL_CONFIRM, QHeaderView.ResizeMode.Fixed)
         # 表格内容超出时显示滚动条，避免建议列被压缩
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -416,7 +395,7 @@ class ScanResultTable(QTableWidget):
         self.setSortingEnabled(True)
 
     def _fill_row(self, row: int, item: ScanResultItem) -> None:
-        """填充一行数据（v1.2.2：增加确认按钮）。"""
+        """填充一行数据。"""
         # 状态（带颜色）
         status_text = item.match_status.label
         status_item = QTableWidgetItem(status_text)
@@ -466,26 +445,6 @@ class ScanResultTable(QTableWidget):
         # 建议
         suggestion_text = item.suggestion or "—"
         self._set_text_cell(row, _COL_SUGGESTION, suggestion_text)
-
-        # v1.2.2：确认按钮
-        confirm_btn = QPushButton(item.confirmed_label)
-        confirm_btn.setFixedSize(58, 26)
-        if item.confirmed:
-            confirm_btn.setStyleSheet(
-                "QPushButton { background: #107C10; color: white; border: none; "
-                "border-radius: 4px; font-size: 12px; }"
-                "QPushButton:hover { background: #0E6A0E; }"
-            )
-        else:
-            confirm_btn.setStyleSheet(
-                "QPushButton { background: #FAFAFA; color: #8A8A8A; "
-                "border: 1px solid #D0D0D0; border-radius: 4px; font-size: 12px; }"
-                "QPushButton:hover { background: #E5F1FB; color: #0067C0; border-color: #0067C0; }"
-            )
-        confirm_btn.clicked.connect(
-            lambda checked, r=row, it=item: self.confirm_toggled.emit(r, it)
-        )
-        self.setCellWidget(row, _COL_CONFIRM, confirm_btn)
 
     def _set_text_cell(self, row: int, col: int, text: str) -> None:
         """设置文本单元格。"""
@@ -749,73 +708,8 @@ class ScanFilterBar(QWidget):
 
 
 # ====================================================================
-# 重新匹配对话框（v1.2.2 新增）
+# 重新匹配对话框（v1.2.2 新增）【已移除】
 # ====================================================================
-
-
-class RematchDialog(QDialog):
-    """重新匹配对话框：列出候选目录供用户选择。"""
-
-    def __init__(
-        self,
-        standard_point_name: str,
-        candidates: list[str],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(f"重新匹配 —— {standard_point_name}")
-        self.setMinimumSize(500, 350)
-        self._selected_folder: str | None = None
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(10)
-
-        # 说明
-        hint = QLabel(
-            f"点位「{standard_point_name}」的候选文件夹：\n"
-            f"请选择一个文件夹作为匹配目标。此选择将保存到历史记录，下次扫描时优先使用。"
-        )
-        hint.setStyleSheet("color: #555;")
-        layout.addWidget(hint)
-
-        # 候选列表
-        self._table = QTableWidget()
-        self._table.setColumnCount(1)
-        self._table.setHorizontalHeaderLabels(["候选文件夹"])
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._table.setAlternatingRowColors(True)
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.setRowCount(len(candidates))
-        for i, c in enumerate(candidates):
-            self._table.setItem(i, 0, QTableWidgetItem(c))
-        layout.addWidget(self._table, 1)
-
-        # 按钮
-        btn_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btn_box.accepted.connect(self._on_accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
-
-    def _on_accept(self) -> None:
-        """确认选择。"""
-        row = self._table.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "提示", "请选择一个候选文件夹。")
-            return
-        item = self._table.item(row, 0)
-        if item:
-            self._selected_folder = item.text()
-        self.accept()
-
-    def selected_folder(self) -> str | None:
-        """返回用户选择的文件夹名称。"""
-        return self._selected_folder
 
 
 # ====================================================================
@@ -824,12 +718,12 @@ class RematchDialog(QDialog):
 
 
 class ScanCenterPage(BasePage):
-    """扫描结果中心页面（v1.2.2 升级：人工确认 + 重新匹配 + 学习 + 批量 + 导出）。
+    """扫描中心页面。
 
     布局：
-        顶部：项目名称、扫描时间、扫描耗时、扫描目录
-        按钮行：执行扫描 / 全部确认 / 批量确认已匹配 / 重新匹配 / 导出Excel
-        统计卡片行（含已确认）
+        顶部：项目选择器、扫描时间、扫描耗时、扫描目录
+        按钮行：执行扫描 / 全部确认 / 导出 Excel / 选择项目文件夹 / 整理文件
+        统计卡片行（总点位/已匹配/部分匹配/未匹配/CAD缺失/预算缺失）
         结果列表 + 右侧详情预览面板
     """
 
@@ -917,8 +811,7 @@ class ScanCenterPage(BasePage):
 
         layout.addLayout(info_layout, 1)
 
-        # 操作按钮（v1.2.2 新增确认/匹配/导出按钮）
-        # v1.4.1：删除重复的「重新扫描」按钮，仅保留「执行扫描」
+        # 操作按钮
         self.scan_btn = QPushButton("执行扫描", bar)
         self.scan_btn.setDefault(True)
         self.scan_btn.clicked.connect(self._on_scan)
@@ -931,14 +824,6 @@ class ScanCenterPage(BasePage):
             "QPushButton:hover { background: #0E6A0E; }"
         )
         layout.addWidget(self.confirm_all_btn)
-
-        self.batch_confirm_btn = QPushButton("批量确认已匹配", bar)
-        self.batch_confirm_btn.clicked.connect(self._on_batch_confirm_matched)
-        layout.addWidget(self.batch_confirm_btn)
-
-        self.rematch_btn = QPushButton("重新匹配", bar)
-        self.rematch_btn.clicked.connect(self._on_rematch)
-        layout.addWidget(self.rematch_btn)
 
         self.export_btn = QPushButton("导出 Excel", bar)
         self.export_btn.clicked.connect(self._on_export_excel)
@@ -967,7 +852,7 @@ class ScanCenterPage(BasePage):
     # ------------------------------------------------------------------ 统计卡片
 
     def _setup_stat_cards(self) -> None:
-        """统计卡片行（v1.2.2 增加已确认）。"""
+        """统计卡片行。"""
         self.stat_cards = StatCardRow(self)
         self.stat_cards.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
@@ -992,7 +877,6 @@ class ScanCenterPage(BasePage):
 
         self.result_table = ScanResultTable(splitter)
         self.result_table.item_selected.connect(self._on_item_selected)
-        self.result_table.confirm_toggled.connect(self._on_confirm_toggled)
         splitter.addWidget(self.result_table)
 
         self.preview_panel = DetailPreviewPanel(splitter)
@@ -1166,8 +1050,8 @@ class ScanCenterPage(BasePage):
         self.preview_panel.clear_detail()
 
         logger.info(
-            "扫描中心渲染完成（v1.2.2）：总=%d 已匹配=%d 未找到=%d 已确认=%d",
-            s.total_points, s.matched_count, s.not_found_count, s.confirmed_count,
+            "扫描中心渲染完成：总=%d 已匹配=%d 未找到=%d",
+            s.total_points, s.matched_count, s.not_found_count,
         )
         self._update_scan_button_text()
 
@@ -1249,37 +1133,6 @@ class ScanCenterPage(BasePage):
 
     # ------------------------------------------------------------------ 确认操作（v1.2.2）
 
-    def _on_confirm_toggled(self, _row: int, item: ScanResultItem) -> None:
-        """用户点击确认按钮 → 切换确认状态并保存到历史。"""
-        if self._project_id is None or self._summary is None:
-            return
-
-        item.confirmed = not item.confirmed
-
-        if item.confirmed:
-            item.match_method = "manual"
-            if item.matched_folder:
-                self._save_match_history(item)
-        else:
-            # 取消确认：重新计算匹配状态
-            item.match_method = "fuzzy"
-            if item.match_score >= 0.85:
-                item.match_status = MatchStatus.MATCHED
-            elif item.match_score >= 0.70:
-                item.match_status = MatchStatus.PARTIAL_MATCH
-            else:
-                item.match_status = MatchStatus.NOT_FOUND
-
-        # 刷新统计和列表
-        self._summary = ScanResultSummary.from_items(
-            items=self._summary.items,
-            project_id=self._project_id,
-            project_name=self._project_name,
-            scan_directory=self._summary.scan_directory,
-            scan_duration_ms=self._summary.scan_duration_ms,
-        )
-        self._display_summary()
-
     def _on_confirm_all(self) -> None:
         """全部确认：确认所有已匹配但有文件夹的结果。"""
         if self._project_id is None or self._summary is None:
@@ -1298,29 +1151,6 @@ class ScanCenterPage(BasePage):
             QMessageBox.information(self, "全部确认", f"已确认 {count} 个点位。")
         else:
             QMessageBox.information(self, "提示", "没有可确认的未确认点位。")
-
-    def _on_batch_confirm_matched(self) -> None:
-        """批量确认已匹配项：仅确认 MATCHED 状态的未确认项。"""
-        if self._project_id is None or self._summary is None:
-            return
-
-        count = 0
-        for item in self._summary.items:
-            if (
-                not item.confirmed
-                and item.match_status == MatchStatus.MATCHED
-                and item.matched_folder
-            ):
-                item.confirmed = True
-                item.match_method = "manual"
-                self._save_match_history(item)
-                count += 1
-
-        if count > 0:
-            self._refresh_summary()
-            QMessageBox.information(self, "批量确认", f"已确认 {count} 个已匹配点位。")
-        else:
-            QMessageBox.information(self, "提示", "没有可批量确认的未确认已匹配点位。")
 
     def _save_match_history(self, item: ScanResultItem) -> None:
         """保存单条匹配历史到数据库。"""
@@ -1354,74 +1184,6 @@ class ScanCenterPage(BasePage):
             scan_duration_ms=self._summary.scan_duration_ms,
         )
         self._display_summary()
-
-    # ------------------------------------------------------------------ 重新匹配（v1.2.2）
-
-    def _on_rematch(self) -> None:
-        """对选中行执行重新匹配。"""
-        if self._project_id is None or self._summary is None:
-            return
-
-        row = self.result_table.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "提示", "请先在结果列表中点击选择一个点位。")
-            return
-        if row >= len(self._summary.items):
-            return
-
-        item = self._summary.items[row]
-        # 只允许 NOT_FOUND / PARTIAL_MATCH / MULTIPLE_MATCH 重新匹配
-        if item.match_status == MatchStatus.MATCHED and item.confirmed:
-            QMessageBox.information(self, "提示", "已匹配且已确认的点位无需重新匹配。")
-            return
-
-        # 收集候选目录
-        from ....core.scanner import TEST_ROOT_PATH, scan_project_root
-
-        candidates: list[str] = []
-        try:
-            projects = scan_project_root(str(TEST_ROOT_PATH))
-            from ....core.matcher import match_folder
-
-            matched_project = None
-            for proj in projects:
-                result = match_folder(self._project_name, proj.name)
-                if result.is_match:
-                    matched_project = proj
-                    break
-
-            if matched_project is not None:
-                for site in matched_project.sites:
-                    candidates.append(site.name)
-        except Exception as exc:
-            logger.warning("获取候选目录失败：%s", exc)
-
-        # 打开选择对话框
-        dialog = RematchDialog(item.standard_point_name, candidates, self)
-        if not dialog.exec():
-            return  # 用户取消
-
-        selected = dialog.selected_folder()
-        if not selected:
-            return
-
-        # 更新匹配结果
-        item.matched_folder = selected
-        item.match_status = MatchStatus.MATCHED
-        item.match_score = 1.0
-        item.match_method = "manual"
-        item.confirmed = True
-        item.suggestion = f"已确认（manual）—— 用户重新匹配至「{selected}」"
-
-        # 保存历史
-        self._save_match_history(item)
-
-        # 刷新
-        self._refresh_summary()
-        QMessageBox.information(
-            self, "重新匹配完成",
-            f"点位「{item.standard_point_name}」已重新匹配至：\n{selected}",
-        )
 
     # ------------------------------------------------------------------ 导出 Excel（v1.2.2）
 

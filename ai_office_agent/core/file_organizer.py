@@ -230,9 +230,20 @@ def classify_file(
 
     if ext in _BUDGET_EXTS:
         stem_norm = for_matching(stem)
+        point_norm = for_matching(point_name)
+
+        # 优先：stem 含完整点位名（兼容带时间戳后缀的预算文件）
+        # 例：stem = "西山区海口街道...GJ001202606121607" 含 point_norm = "西山区海口街道...GJ001"
+        if len(point_norm) >= 4 and point_norm in stem_norm:
+            return ClassificationResult(
+                file=file, category="预算",
+                reason=f"表格文件 stem 含点位名",
+                target_dir=Path(point_dir) / "预算",
+            )
+
+        # 备用：stem 去数字后匹配（兼容纯地点名+时间戳的简单命名）
         import re as _re
         stem_no_digits = _re.sub(r"\d+", "", stem_norm).strip("-_ ")
-        point_norm = for_matching(point_name)
         if stem_no_digits and len(stem_no_digits) >= 2:
             if stem_no_digits == point_norm:
                 return ClassificationResult(
@@ -276,7 +287,8 @@ def _drawing_belongs_to_point(file: FileEntry, point_name: str) -> bool:
 
     新规则（仅 stem）：
     1. 文件 stem 标准化后 == 点位名标准化后
-    2. 文件 stem 标准化后以点位名标准化后开头
+    2. 文件 stem 标准化后以点位名标准化后开头（兼容带时间戳后缀的文件名）
+    3. 点位名包含在 stem 中（兼容文件含编号前缀，如"01-昆明湖中坝...dwg"）
     """
     norm_point = for_matching(point_name)
     if not norm_point:
@@ -287,6 +299,9 @@ def _drawing_belongs_to_point(file: FileEntry, point_name: str) -> bool:
     if norm_stem == norm_point:
         return True
     if norm_stem.startswith(norm_point):
+        return True
+    # v1.5.7：点位名包含在 stem 中（文件含编号前缀等）
+    if norm_point in norm_stem:
         return True
     return False
 

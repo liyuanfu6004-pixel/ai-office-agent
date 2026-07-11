@@ -272,6 +272,31 @@ def _score_file_to_point(
         if "分纤箱扩容" in stem and "分纤箱扩容" not in norm_pname:
             return 0.0
 
+        # ── 检查 3：公共后缀 + 前缀矛盾 ──
+        # 共享后缀（如"分纤箱扩容点位"）使模糊匹配给虚高分。
+        # 砍掉公共后缀后比较前缀，前缀不同则拒绝。
+        # 例：五华-红云街道...文件 在 安宁-太平新城街道...目录
+        #     → 共享"分纤箱扩容点位"后缀 → 比较前缀"五华-红云街道"vs"安宁-太平新城街道"
+        #     → prefix_match < 40 → 拒绝归属
+        if stem and len(norm_pname) >= 8:
+            pname_parts = norm_pname.rsplit("-", 1)
+            if len(pname_parts) == 2:
+                common_suffix = pname_parts[1]
+                point_location = pname_parts[0]
+                if (
+                    len(common_suffix) >= 4
+                    and common_suffix in stem
+                    and point_location
+                ):
+                    suffix_idx = stem.rfind(common_suffix)
+                    stem_location = stem[:suffix_idx].strip("- ")
+                    if stem_location and len(stem_location) >= 2:
+                        prefix_match = match_strings(
+                            stem_location, point_location
+                        ).score
+                        if prefix_match < 40:
+                            return 0.0  # 前缀不同 → 另一个点位
+
     # ── 构建路径候选（不含 stem）──
     path_candidates: list[str] = []
     parent = for_matching(file.parent_dir)

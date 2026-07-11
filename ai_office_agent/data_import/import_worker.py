@@ -117,13 +117,13 @@ class ImportWorker(QObject):
                 skipped_no_name += 1
                 continue
 
-            # 项目类型：有值则分流，无值/无法识别则 None（只显示在全部项目）
+            # 项目类型：有值则分流，无值时从项目名称推断，无法识别则 None
             raw_type = _cell(row, self._mapping.get("project_type"))
-            category = (
-                project_categories.resolve_category(raw_type)
-                if raw_type is not None
-                else None
-            )
+            if raw_type is not None and str(raw_type).strip():
+                category = project_categories.resolve_category(raw_type)
+            else:
+                # v1.2.5：类型列为空时，从项目名称智能推断
+                category = project_categories.infer_category_from_name(raw_name)
 
             repo_rows.append(
                 {

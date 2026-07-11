@@ -2,6 +2,40 @@
 
 > 按版本倒序记录。每个开发任务完成后追加一条。
 
+## [v1.5.9] - 2026-07-12 — 分类修复 + 多层表头 + 类型推断
+
+### 反向排斥补充：公共后缀+前缀矛盾
+
+- 新增检查 3：当文件与点位共享同一后缀（如"分纤箱扩容点位"）时，砍掉后缀比较前缀，前缀不同则拒绝归属。
+- 解决「五华-红云街道」预算文件在「安宁-太平新城街道」目录下因 T2 得分虚高而误归属的问题。
+- 修改文件：`ai_office_agent/core/ownership.py`。
+
+### 图纸分类同步缺失规则
+
+- `file_organizer._drawing_belongs_to_point` 同步 `ownership._stem_match` 规则 3（`norm_point in norm_stem`）。
+- 修复图纸文件被误判为"非本点位图纸"的问题（如 `宜良县白鸡龙箐.dwg` → 正确分类为图纸）。
+- 修改文件：`ai_office_agent/core/file_organizer.py`。
+
+### 预算分类兼容嵌入式编码点位名
+
+- 预算识别新增优先匹配：`point_norm in stem_norm`（stem 含完整点位名），优先于"去数字匹配"。
+- 解决如 `西山区海口街道...GJ001202606121607.xlsx` 类文件去数字后失配的问题。
+- 修改文件：`ai_office_agent/core/file_organizer.py`。
+
+### 多层表头合并
+
+- 升级 `excel_reader._detect_header_row` 为 `_build_merged_headers`，支持多级表头。
+- 识别主表头行后继续扫描子表头行（含立项批复/设计批复/结算等关键词），按列向下合并生成完整表头。
+- 附件：`_looks_like_data_row`、`_looks_like_child_header_row` 辅助判定函数。
+- 修改文件：`ai_office_agent/data_import/excel_reader.py`。
+
+### 项目类型自动推断
+
+- 新增 `project_categories.infer_category_from_name`，7 类关键词映射。
+- 导入总体项目表时，若 Excel"项目类型"列为空，从项目名称智能推断类别。
+- 关键词按长度优先匹配（如"城域传送网" > "传输"，"数字家庭" > "社区"）。
+- 修改文件：`ai_office_agent/core/project_categories.py`、`ai_office_agent/data_import/import_worker.py`。
+
 ## [v1.5.8] - 2026-07-09 — 归属识别优化
 
 ### 匹配率精细化
